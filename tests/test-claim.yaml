@@ -1,0 +1,36 @@
+apiVersion: resource.k8s.io/v1
+kind: DeviceClass
+metadata:
+  name: tpu
+spec:
+  selectors:
+    - cel:
+        expression: device.driver == "tpu.google.com"
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: tpu-claim
+spec:
+  devices:
+    requests:
+      - name: request-0
+        exactly:
+          deviceClassName: tpu
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-pod
+spec:
+  restartPolicy: Never
+  resourceClaims:
+    - name: tpu-claim
+      resourceClaimName: tpu-claim
+  containers:
+    - name: ubuntu
+      image: ubuntu:24.04
+      command: ["sleep", "infinity"]
+      resources:
+        claims:
+          - name: tpu-claim

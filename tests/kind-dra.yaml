@@ -1,0 +1,14 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+featureGates:
+  DynamicResourceAllocation: true
+nodes:
+- role: control-plane
+  extraMounts:
+  - hostPath: /tmp/k8s-dra/plugins_registry
+    containerPath: /var/lib/kubelet/plugins_registry
+  - hostPath: /tmp/k8s-dra/plugins
+    containerPath: /var/lib/kubelet/plugins
+    propagation: Bidirectional
+  - hostPath: /tmp/k8s-dra/cdi
+    containerPath: /var/run/cdi
