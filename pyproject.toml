@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kubernetes-pydra"
+version = "0.1.0"
+description = "Python Kubernetes DRA (Dynamic Resource Allocation) plugins"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "grpcio>=1.60.0",
+    "kubernetes>=36.0.2",
+    "protobuf>=4.21.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "grpcio-tools>=1.60.0",
+    "ruff>=0.4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/aojea/pydra"
+Repository = "https://github.com/aojea/pydra"
+
+[tool.setuptools.packages.find]
+include = ["pydra*"]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+pydra = ["core/generated/dra/*.py", "core/generated/pluginregistration/*.py"]
