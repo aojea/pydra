@@ -129,7 +129,22 @@ class DraNodeServer(reg_pb2_grpc.RegistrationServicer, dra_pb2_grpc.DRAPluginSer
         node_name = os.environ.get("NODE_NAME", "pydra-test-control-plane")
         device_ids = self.get_devices()
         
-        devices = [client.V1Device(name=dev_id) for dev_id in device_ids]
+        devices = []
+        for dev in device_ids:
+            if isinstance(dev, str):
+                devices.append(client.V1Device(name=dev))
+            elif isinstance(dev, dict):
+                attrs = dev.get("attributes", {})
+                device_attrs = {}
+                for k, v in attrs.items():
+                    if isinstance(v, bool):
+                        device_attrs[k] = client.V1DeviceAttribute(bool=v)
+                    elif isinstance(v, int):
+                        device_attrs[k] = client.V1DeviceAttribute(int=v)
+                    else:
+                        device_attrs[k] = client.V1DeviceAttribute(string=str(v))
+                devices.append(client.V1Device(name=dev["name"], attributes=device_attrs))
+
         pool = client.V1ResourcePool(
             name=self.plugin_name,
             generation=1,

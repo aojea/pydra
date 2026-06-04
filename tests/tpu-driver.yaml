@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: pydra-tpu-plugin
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: pydra-tpu-plugin
+  template:
+    metadata:
+      labels:
+        app: pydra-tpu-plugin
+    spec:
+      serviceAccountName: pydra-plugin
+      tolerations:
+      - operator: Exists
+      containers:
+      - name: driver
+        image: pydra-driver:latest
+        imagePullPolicy: Never
+        command: ["python", "-m", "pydra.plugins.tpu.driver"]
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: SOCKET_PATH
+          value: /var/lib/kubelet/plugins/tpu.google.com/plugin.sock
+        - name: REGISTRATION_SOCKET_PATH
+          value: /var/lib/kubelet/plugins_registry/tpu.google.com-reg.sock
+        - name: CDI_DIR
+          value: /var/run/cdi
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: plugins
+          mountPath: /var/lib/kubelet/plugins
+        - name: plugins-registry
+          mountPath: /var/lib/kubelet/plugins_registry
+        - name: cdi
+          mountPath: /var/run/cdi
+        - name: sys
+          mountPath: /sys
+          readOnly: true
+      volumes:
+      - name: plugins
+        hostPath:
+          path: /var/lib/kubelet/plugins
+          type: DirectoryOrCreate
+      - name: plugins-registry
+        hostPath:
+          path: /var/lib/kubelet/plugins_registry
+          type: DirectoryOrCreate
+      - name: cdi
+        hostPath:
+          path: /var/run/cdi
+          type: DirectoryOrCreate
+      - name: sys
+        hostPath:
+          path: /sys
+          type: Directory

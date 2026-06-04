@@ -1,6 +1,6 @@
 grpcio>=1.60.0
 grpcio-tools>=1.60.0
-kubernetes>=34.0.0
+kubernetes>=36.0.2
 pydantic>=2.0.0
 pytest>=8.0.0
 

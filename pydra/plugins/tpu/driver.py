@@ -25,7 +25,7 @@ class TpuDraPlugin(DraNodeServer):
 
         # Generate CDI v0.5.0 specification
         cdi_spec = {
-            "cdiVersion": "0.5.0",
+            "cdiVersion": "1.1.0",
             "kind": "tpu.google.com/device",
             "devices": [
                 {

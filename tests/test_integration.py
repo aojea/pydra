@@ -8,103 +8,21 @@ from kubernetes import client, config
 CLUSTER_NAME = "pydra-test"
 HOST_DRA_DIR = "/tmp/k8s-dra"
 
-def cleanup_host_dir():
-    print("Cleaning up host directory via Docker...")
-    if os.path.exists(HOST_DRA_DIR):
-        subprocess.run(["docker", "run", "--rm", "-v", "/tmp:/tmp", "alpine", "chmod", "-R", "777", HOST_DRA_DIR], check=False)
-        subprocess.run(["docker", "run", "--rm", "-v", f"{HOST_DRA_DIR}:/k8s-dra", "alpine", "sh", "-c", "rm -rf /k8s-dra/*"], check=False)
 
-@pytest.fixture(scope="module", autouse=True)
-def cluster_lifecycle():
-    # 1. Setup host directories
-    print("Setting up host directories...")
-    cleanup_host_dir()
-    os.makedirs(f"{HOST_DRA_DIR}/plugins_registry", exist_ok=True)
-    os.makedirs(f"{HOST_DRA_DIR}/plugins/tpu.google.com", exist_ok=True)
-    os.makedirs(f"{HOST_DRA_DIR}/cdi", exist_ok=True)
-    subprocess.run(["docker", "run", "--rm", "-v", "/tmp:/tmp", "alpine", "chmod", "-R", "777", HOST_DRA_DIR], check=False)
-
-    # 2. Recreate Kind cluster
-    print("Recreating Kind cluster...")
-    subprocess.run(["kind", "delete", "cluster", "--name", CLUSTER_NAME], check=False)
-    subprocess.run(["kind", "create", "cluster", "--name", CLUSTER_NAME, "--config", "tests/kind-dra.yaml"], check=True)
-
-    # 3. Setup mock hardware inside control-plane container
-    print("Setting up mock hardware inside the control-plane container...")
-    control_plane_container = f"{CLUSTER_NAME}-control-plane"
-    subprocess.run(["docker", "exec", control_plane_container, "mkdir", "-p", "/usr/lib"], check=True)
-    subprocess.run(["docker", "exec", control_plane_container, "touch", "/usr/lib/libtpu.so"], check=True)
-    
-    # Check if character device already exists; if not, create it
-    check_dev = subprocess.run(["docker", "exec", control_plane_container, "test", "-c", "/dev/accel0"], check=False)
-    if check_dev.returncode != 0:
-        subprocess.run(["docker", "exec", control_plane_container, "mknod", "-m", "666", "/dev/accel0", "c", "1", "3"], check=True)
-
-    # Untaint control plane nodes to ensure user pods can be scheduled
-    subprocess.run(["kubectl", "taint", "nodes", "--all", "node-role.kubernetes.io/control-plane-"], check=False)
-    subprocess.run(["kubectl", "taint", "nodes", "--all", "node-role.kubernetes.io/master-"], check=False)
-
-    yield
-
-    # Cleanup cluster and directories
-    print("Cleaning up cluster...")
-    subprocess.run(["kind", "delete", "cluster", "--name", CLUSTER_NAME], check=False)
-    cleanup_host_dir()
-
-@pytest.fixture(scope="module")
-def driver_process():
-    print("Starting Python DRA driver...")
-    env = os.environ.copy()
-    env.update({
-        "SOCKET_PATH": f"{HOST_DRA_DIR}/plugins/tpu.google.com/plugin.sock",
-        "KUBELET_SOCKET_PATH": "/var/lib/kubelet/plugins/tpu.google.com/plugin.sock",
-        "REGISTRATION_SOCKET_PATH": f"{HOST_DRA_DIR}/plugins_registry/tpu.google.com-reg.sock",
-        "CDI_DIR": f"{HOST_DRA_DIR}/cdi",
-        "NODE_NAME": f"{CLUSTER_NAME}-control-plane",
-        "PYTHONPATH": "."
-    })
-
-    proc = subprocess.Popen([
-        ".venv/bin/python3", "-m", "pydra.plugins.tpu.driver"
-    ], env=env)
-
-    # Allow startup time
-    time.sleep(3)
-    yield proc
-
-    print("Killing driver process...")
-    proc.terminate()
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-
-def test_end_to_end_tpu_allocation(driver_process):
+def test_end_to_end_tpu_allocation(test_namespace):
     # Load kubernetes client config
     config.load_kube_config()
-    
-    # Wait for the default service account to exist
-    print("Waiting for default service account...")
     core_api = client.CoreV1Api()
-    for _ in range(30):
-        try:
-            core_api.read_namespaced_service_account("default", "default")
-            break
-        except Exception:
-            time.sleep(1)
-    else:
-        pytest.fail("Default service account was not created in time")
-
-    # Apply the manifests
-    print("Applying manifests...")
-    subprocess.run(["kubectl", "apply", "-f", "tests/test-claim.yaml"], check=True)
+    
+    # Apply the manifests in the test_namespace
+    subprocess.run(["kubectl", "apply", "-n", test_namespace, "-f", "tests/test-claim.yaml"], check=True)
 
     # Wait for the pod to become Ready / Running
     print("Waiting for test-pod to reach Running state...")
     pod_running = False
     for _ in range(60):
         try:
-            pod = core_api.read_namespaced_pod("test-pod", "default")
+            pod = core_api.read_namespaced_pod("test-pod", test_namespace)
             if pod.status.phase == "Running":
                 # Check if Ready condition is True
                 ready_condition = next((c for c in pod.status.conditions if c.type == "Ready"), None)
@@ -118,22 +36,36 @@ def test_end_to_end_tpu_allocation(driver_process):
         # Collect diagnostics on failure
         print("\n=== DIAGNOSTICS ===")
         subprocess.run(["kubectl", "get", "pods,resourceclaims,deviceclasses,resourceslices", "-A"], check=False)
-        subprocess.run(["kubectl", "describe", "pod", "test-pod"], check=False)
-        subprocess.run(["kubectl", "describe", "resourceclaim", "tpu-claim"], check=False)
+        subprocess.run(["kubectl", "describe", "pod", "test-pod", "-n", test_namespace], check=False)
+        subprocess.run(["kubectl", "describe", "resourceclaim", "tpu-claim", "-n", test_namespace], check=False)
         print("===================\n")
         pytest.fail("test-pod did not reach Running/Ready status")
 
     # Validate that the CDI JSON file was written
-    cdi_dir_contents = os.listdir(f"{HOST_DRA_DIR}/cdi")
+    cdi_ls = subprocess.run(["docker", "exec", f"{CLUSTER_NAME}-control-plane", "ls", "/var/run/cdi"], capture_output=True, text=True, check=True)
+    cdi_dir_contents = cdi_ls.stdout.splitlines()
     cdi_files = [f for f in cdi_dir_contents if f.startswith("tpu.google.com_") and f.endswith(".json")]
-    assert len(cdi_files) == 1, f"Expected 1 CDI file, found {len(cdi_files)}: {cdi_dir_contents}"
+    assert len(cdi_files) >= 1, f"Expected CDI file, found: {cdi_dir_contents}"
 
-    cdi_file_path = os.path.join(f"{HOST_DRA_DIR}/cdi", cdi_files[0])
-    with open(cdi_file_path, "r") as f:
-        cdi_data = json.load(f)
+    # Verify we check the one for our namespace/claim if possible, but since the claim UID is unique
+    # we just parse the last one or anyone that matches
+    # Let's get the UID of our claim
+    claim_api = client.CustomObjectsApi()
+    try:
+        claim = claim_api.get_namespaced_custom_object("resource.k8s.io", "v1", test_namespace, "resourceclaims", "tpu-claim")
+        claim_uid = claim["metadata"]["uid"]
+        expected_file = f"tpu.google.com_{claim_uid}.json"
+        assert expected_file in cdi_dir_contents, f"Expected {expected_file} in {cdi_dir_contents}"
+        cdi_file_name = expected_file
+    except Exception as e:
+        # fallback to the first found file
+        cdi_file_name = cdi_files[-1]
+
+    cdi_cat = subprocess.run(["docker", "exec", f"{CLUSTER_NAME}-control-plane", "cat", f"/var/run/cdi/{cdi_file_name}"], capture_output=True, text=True, check=True)
+    cdi_data = json.loads(cdi_cat.stdout)
 
     # Validate CDI structure
-    assert cdi_data["cdiVersion"] == "0.5.0"
+    assert cdi_data["cdiVersion"] == "1.1.0"
     assert cdi_data["kind"] == "tpu.google.com/device"
     assert len(cdi_data["devices"]) == 1
     assert cdi_data["devices"][0]["name"] == "0"

@@ -4,11 +4,5 @@ featureGates:
   DynamicResourceAllocation: true
 nodes:
 - role: control-plane
-  extraMounts:
-  - hostPath: /tmp/k8s-dra/plugins_registry
-    containerPath: /var/lib/kubelet/plugins_registry
-  - hostPath: /tmp/k8s-dra/plugins
-    containerPath: /var/lib/kubelet/plugins
-    propagation: Bidirectional
-  - hostPath: /tmp/k8s-dra/cdi
-    containerPath: /var/run/cdi
+  image: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+
