@@ -12,6 +12,7 @@ Traditional Kubernetes device plugins require Go. However, the AI hardware ecosy
 
 `pydra` enforces a strict separation between Kubernetes protocol mechanics and raw silicon management.
 
+```
 [ Kubernetes Kubelet ]
              |
              | (gRPC over Unix Domain Socket)
@@ -32,6 +33,7 @@ Traditional Kubernetes device plugins require Go. However, the AI hardware ecosy
 |   pydra-tpu          pydra-nvidia         pydra-amd   |
 |  (Imports JAX/SDK)  (Imports NVML)      (Imports SMI) |
 +-------------------------------------------------------+
+```
 
 ### 1. `pydra-core`
 
