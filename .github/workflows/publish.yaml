@@ -23,8 +23,11 @@ jobs:
       with:
         python-version: '3.13'
 
+    - name: Install dependencies
+      run: python3 -m pip install grpcio-tools
+
     - name: Compile Protobufs
-      run: make protos
+      run: make protos PYTHON=python3
 
     - name: Install build tool
       run: python3 -m pip install --upgrade build

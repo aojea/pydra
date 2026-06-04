@@ -2,6 +2,8 @@
 
 all: protos
 
+PYTHON ?= .venv/bin/python3
+
 protos:
 	mkdir -p proto
 	curl -sSL -o proto/pluginregistration.proto https://raw.githubusercontent.com/kubernetes/kubernetes/master/staging/src/k8s.io/kubelet/pkg/apis/pluginregistration/v1/api.proto
@@ -11,8 +13,8 @@ protos:
 	touch pydra/core/generated/__init__.py
 	touch pydra/core/generated/pluginregistration/__init__.py
 	touch pydra/core/generated/dra/__init__.py
-	.venv/bin/python3 -m grpc_tools.protoc -Iproto --python_out=pydra/core/generated/pluginregistration --grpc_python_out=pydra/core/generated/pluginregistration pluginregistration.proto
-	.venv/bin/python3 -m grpc_tools.protoc -Iproto --python_out=pydra/core/generated/dra --grpc_python_out=pydra/core/generated/dra dra.proto
+	$(PYTHON) -m grpc_tools.protoc -Iproto --python_out=pydra/core/generated/pluginregistration --grpc_python_out=pydra/core/generated/pluginregistration pluginregistration.proto
+	$(PYTHON) -m grpc_tools.protoc -Iproto --python_out=pydra/core/generated/dra --grpc_python_out=pydra/core/generated/dra dra.proto
 	sed -i 's/import dra_pb2/from . import dra_pb2/g' pydra/core/generated/dra/dra_pb2_grpc.py
 	sed -i 's/import pluginregistration_pb2/from . import pluginregistration_pb2/g' pydra/core/generated/pluginregistration/pluginregistration_pb2_grpc.py
 
