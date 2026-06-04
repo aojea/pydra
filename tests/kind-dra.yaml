@@ -1,0 +1,76 @@
+# kind-dra.yaml
+# Kind cluster configuration for testing the Python DRA driver.
+#
+# This cluster is designed to run the driver as a local process on the host,
+# with the socket and CDI directories shared into the kind container via
+# bind-mounts.  This bypasses the need to build a container image.
+#
+# Prerequisites:
+#   kind >= 0.20, kubectl, Python 3.11+
+#
+# Usage:
+#   ./tests/run_integration.sh
+#   — or —
+#   kind create cluster --config tests/kind-dra.yaml
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+
+nodes:
+  - role: control-plane
+    # -----------------------------------------------------------------
+    # Containerd: enable CDI device injection
+    # -----------------------------------------------------------------
+    containerdConfigPatches:
+      - |
+        [plugins."io.containerd.grpc.v1.cri"]
+          enable_cdi = true
+          cdi_spec_dirs = ["/var/run/cdi"]
+
+    # -----------------------------------------------------------------
+    # Bind-mounts: share host directories so the kubelet inside kind
+    # can see the sockets and CDI specs written by the local Python
+    # process.
+    # -----------------------------------------------------------------
+    extraMounts:
+      - hostPath: /tmp/k8s-dra/plugins_registry
+        containerPath: /var/lib/kubelet/plugins_registry
+        readOnly: false
+        selinuxRelabel: false
+        propagation: Bidirectional
+      - hostPath: /tmp/k8s-dra/plugins
+        containerPath: /var/lib/kubelet/plugins
+        readOnly: false
+        selinuxRelabel: false
+        propagation: Bidirectional
+      - hostPath: /tmp/k8s-dra/cdi
+        containerPath: /var/run/cdi
+        readOnly: false
+        selinuxRelabel: false
+        propagation: Bidirectional
+
+    # -----------------------------------------------------------------
+    # Kubeadm config: enable DynamicResourceAllocation feature gate
+    # -----------------------------------------------------------------
+    kubeadmConfigPatches:
+      - |
+        kind: ClusterConfiguration
+        apiServer:
+          extraArgs:
+            feature-gates: "DynamicResourceAllocation=true"
+        scheduler:
+          extraArgs:
+            feature-gates: "DynamicResourceAllocation=true"
+        controllerManager:
+          extraArgs:
+            feature-gates: "DynamicResourceAllocation=true"
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            feature-gates: "DynamicResourceAllocation=true"
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            feature-gates: "DynamicResourceAllocation=true"

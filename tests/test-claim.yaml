@@ -1,0 +1,59 @@
+# test-claim.yaml
+#
+# Kubernetes manifests for testing the Python DRA (Dynamic Resource Allocation)
+# TPU driver.
+#
+# Compatibility:
+#   Kubernetes >= 1.32 (resource.k8s.io/v1beta1 DRA API)
+#   For Kubernetes 1.31, change apiVersion to resource.k8s.io/v1alpha3
+#   and update the ResourceClaim spec accordingly.
+#
+# Apply with:
+#   kubectl apply -f tests/test-claim.yaml
+
+---
+# DeviceClass tells the scheduler/kubelet which driver handles this class
+# of devices.  Replace ResourceClass (removed in v1beta1) with DeviceClass.
+apiVersion: resource.k8s.io/v1beta1
+kind: DeviceClass
+metadata:
+  name: tpu.google.com
+spec:
+  selectors:
+    - cel:
+        expression: "device.driver == 'tpu.google.com'"
+
+---
+# ResourceClaim: requests one TPU device from the tpu.google.com driver.
+apiVersion: resource.k8s.io/v1beta1
+kind: ResourceClaim
+metadata:
+  name: tpu-claim
+  namespace: default
+spec:
+  devices:
+    requests:
+      - name: tpu
+        deviceClassName: tpu.google.com
+
+---
+# Pod: runs a simple container that references the ResourceClaim above.
+# Kubelet will call NodePrepareResources on our Python driver before
+# starting the container.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tpu-test
+  namespace: default
+spec:
+  restartPolicy: Never
+  resourceClaims:
+    - name: tpu
+      resourceClaimName: tpu-claim
+  containers:
+    - name: main
+      image: ubuntu:22.04
+      command: ["sleep", "infinity"]
+      resources:
+        claims:
+          - name: tpu
