@@ -21,3 +21,13 @@ clean:
 
 test-integration:
 	./tests/run_integration.sh
+
+verify:
+	./hack/verify-protos.sh
+	./hack/verify-lint.sh
+
+verify-protos:
+	./hack/verify-protos.sh
+
+verify-lint:
+	./hack/verify-lint.sh

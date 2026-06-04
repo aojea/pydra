@@ -139,7 +139,7 @@ async def main():
     )
     try:
         await plugin.serve()
-    except Exception as e:
+    except Exception:
         logging.getLogger("main").exception("Plugin server crashed")
         sys.exit(1)
 

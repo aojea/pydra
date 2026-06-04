@@ -1,4 +1,3 @@
-import os
 import subprocess
 import time
 import json
@@ -19,7 +18,6 @@ def test_end_to_end_tpu_allocation(test_namespace):
 
     # Wait for the pod to become Ready / Running
     print("Waiting for test-pod to reach Running state...")
-    pod_running = False
     for _ in range(60):
         try:
             pod = core_api.read_namespaced_pod("test-pod", test_namespace)
@@ -27,7 +25,6 @@ def test_end_to_end_tpu_allocation(test_namespace):
                 # Check if Ready condition is True
                 ready_condition = next((c for c in pod.status.conditions if c.type == "Ready"), None)
                 if ready_condition and ready_condition.status == "True":
-                    pod_running = True
                     break
         except Exception:
             pass
@@ -57,7 +54,7 @@ def test_end_to_end_tpu_allocation(test_namespace):
         expected_file = f"tpu.google.com_{claim_uid}.json"
         assert expected_file in cdi_dir_contents, f"Expected {expected_file} in {cdi_dir_contents}"
         cdi_file_name = expected_file
-    except Exception as e:
+    except Exception:
         # fallback to the first found file
         cdi_file_name = cdi_files[-1]
 
