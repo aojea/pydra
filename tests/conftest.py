@@ -24,7 +24,7 @@ def global_cluster_setup():
     subprocess.run(["kind", "load", "docker-image", "pydra-driver:latest", "--name", CLUSTER_NAME], check=True)
 
     control_plane_container = f"{CLUSTER_NAME}-control-plane"
-    
+
     # Setup TPU mock hardware
     subprocess.run(["docker", "exec", control_plane_container, "mkdir", "-p", "/usr/lib"], check=True)
     subprocess.run(["docker", "exec", control_plane_container, "touch", "/usr/lib/libtpu.so"], check=True)
@@ -34,6 +34,7 @@ def global_cluster_setup():
 
     # Setup Network mock hardware
     subprocess.run(["docker", "exec", control_plane_container, "ip", "link", "add", "dummy0", "type", "dummy"], check=False)
+    subprocess.run(["docker", "exec", control_plane_container, "ip", "link", "add", "dummy1", "type", "dummy"], check=True)
     subprocess.run(["docker", "exec", control_plane_container, "ip", "link", "set", "up", "dev", "dummy0"], check=False)
     subprocess.run(["docker", "exec", control_plane_container, "ip", "addr", "add", "169.254.169.13/32", "dev", "dummy0"], check=False)
 
@@ -72,24 +73,35 @@ spec: {}
 @pytest.fixture
 def test_namespace():
     import uuid
+    import time
     from kubernetes import client, config
+    from kubernetes.client.rest import ApiException
     config.load_kube_config()
     core_api = client.CoreV1Api()
-    
+
     ns_name = f"test-ns-{uuid.uuid4().hex[:8]}"
     ns = client.V1Namespace(metadata=client.V1ObjectMeta(name=ns_name))
     core_api.create_namespace(ns)
-    
+
     # Wait for default service account
     for _ in range(30):
         try:
             core_api.read_namespaced_service_account("default", ns_name)
             break
         except Exception:
-            import time
             time.sleep(1)
-            
+
     yield ns_name
-    
+
     core_api.delete_namespace(ns_name)
+
+    # Wait for namespace to be completely deleted to free up DRA allocations
+    for _ in range(60):
+        try:
+            core_api.read_namespace(ns_name)
+            time.sleep(2)
+        except ApiException as e:
+            if e.status == 404:
+                break
+            time.sleep(2)
 

@@ -12,7 +12,7 @@ def test_end_to_end_tpu_allocation(test_namespace):
     # Load kubernetes client config
     config.load_kube_config()
     core_api = client.CoreV1Api()
-    
+
     # Apply the manifests in the test_namespace
     subprocess.run(["kubectl", "apply", "-n", test_namespace, "-f", "tests/test-claim.yaml"], check=True)
 
@@ -66,7 +66,7 @@ def test_end_to_end_tpu_allocation(test_namespace):
     assert cdi_data["kind"] == "tpu.google.com/device"
     assert len(cdi_data["devices"]) == 1
     assert cdi_data["devices"][0]["name"] == "0"
-    
+
     device_nodes = cdi_data["devices"][0]["containerEdits"]["deviceNodes"]
     assert device_nodes[0]["path"] == "/dev/accel0"
     assert device_nodes[0]["hostPath"] == "/dev/accel0"

@@ -1,7 +1,7 @@
 apiVersion: resource.k8s.io/v1
 kind:  ResourceClaim
 metadata:
-  name: dummy-interface-static-ip
+  name: dummy-interface-restart-test
 spec:
   devices:
     requests:
@@ -10,7 +10,7 @@ spec:
         deviceClassName: dra.net
         selectors:
           - cel:
-              expression: has(device.attributes["dra.net"].name) && device.attributes["dra.net"].name == "dummy0"
+              expression: has(device.attributes["dra.net"].name) && device.attributes["dra.net"].name == "dummy1"
     config:
     - opaque:
         driver: dra.net
@@ -18,12 +18,12 @@ spec:
           interface:
             name: "eth99"
             addresses:
-            - "169.254.169.13/24"
+            - "169.254.169.14/24"
 ---
 apiVersion: v1
 kind: Pod
 metadata:
-  name: pod-network-test
+  name: pod-network-restart-test
   labels:
     app: pod
 spec:
@@ -33,7 +33,7 @@ spec:
     command: ["/agnhost", "pause"]
     resources:
       claims:
-      - name: dummy1
+      - name: dummy2
   resourceClaims:
-  - name: dummy1
-    resourceClaimName: dummy-interface-static-ip
+  - name: dummy2
+    resourceClaimName: dummy-interface-restart-test

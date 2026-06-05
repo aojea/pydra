@@ -128,7 +128,7 @@ class DraNodeServer(reg_pb2_grpc.RegistrationServicer, dra_pb2_grpc.DRAPluginSer
         from kubernetes import client
         node_name = os.environ.get("NODE_NAME", "pydra-test-control-plane")
         device_ids = self.get_devices()
-        
+
         devices = []
         for dev in device_ids:
             if isinstance(dev, str):
@@ -165,7 +165,7 @@ class DraNodeServer(reg_pb2_grpc.RegistrationServicer, dra_pb2_grpc.DRAPluginSer
             ),
             spec=spec
         )
-        
+
         try:
             # Try to read first
             existing = self.k8s_api.read_resource_slice(name=slice_name)
@@ -222,10 +222,10 @@ class DraNodeServer(reg_pb2_grpc.RegistrationServicer, dra_pb2_grpc.DRAPluginSer
 
         self.logger.info(f"Advertised Kubelet endpoint: {self.kubelet_socket_path}")
         await server.start()
-        
+
         # Publish ResourceSlice to API server
         await asyncio.to_thread(self.publish_resource_slice)
-        
+
         try:
             await server.wait_for_termination()
         finally:
