@@ -26,6 +26,10 @@ dev = [
     "grpcio-tools>=1.60.0",
     "ruff>=0.4.0",
 ]
+tpu = ["libtpu"]
+nvidia = ["nvidia-ml-py"]
+amd = ["amdsmi"]
+all = ["libtpu", "nvidia-ml-py", "amdsmi"]
 
 [project.urls]
 Homepage = "https://github.com/aojea/pydra"

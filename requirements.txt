@@ -4,3 +4,7 @@ kubernetes>=36.0.2
 pydantic>=2.0.0
 pytest>=8.0.0
 
+# Hardware Plugin Dependencies (Optional)
+# nvidia-ml-py
+# amdsmi
+# libtpu
