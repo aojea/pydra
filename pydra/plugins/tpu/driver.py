@@ -34,16 +34,7 @@ class TpuDraPlugin(DraNodeServer):
         # Find all available accel devices
         accel_devices = glob.glob("/dev/accel*")
         if not accel_devices:
-            # Fallback to single mock device
-            devices = [{
-                "name": "0",
-                "attributes": {
-                    "tpu.google.com/characteristics": characteristics,
-                    "tpu.google.com/topology": topology,
-                    "tpu.google.com/details": details,
-                }
-            }]
-            return devices
+            return []
 
         devices = []
         for dev_path in accel_devices:
@@ -90,8 +81,7 @@ class TpuDraPlugin(DraNodeServer):
                 device_id = devices[0]["name"]
                 self.logger.warning(f"Fallback to device_id = {device_id}")
             else:
-                device_id = "0"
-                self.logger.warning(f"Fallback to dummy device_id = {device_id}")
+                raise RuntimeError("No TPU devices available to allocate")
 
         cdi_device_str = f"tpu.google.com/device={device_id}"
         
