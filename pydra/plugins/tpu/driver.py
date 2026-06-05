@@ -31,6 +31,42 @@ class TpuDraPlugin(DraNodeServer):
         except Exception as e:
             self.logger.warning(f"Could not fetch metadata for TPU characteristics: {e}")
 
+        # Fetch detailed topology and metrics using libtpu.sdk if available
+        chip_sdk_info = {}
+        monitoring_info = {}
+        try:
+            from libtpu import sdk
+            try:
+                chip_mappings = sdk.slice.get_chip_coordinates()
+                for mapping in chip_mappings:
+                    idx = str(mapping.chip_index())
+                    chip_sdk_info[idx] = {
+                        "hostname": mapping.hostname(),
+                        "coordinates": str(mapping.coordinates())
+                    }
+            except Exception as e:
+                self.logger.warning(f"Failed to fetch chip coordinates from sdk: {e}")
+
+            monitoring_module = getattr(sdk, "tpumonitoring", getattr(sdk, "monitoring", None))
+            if monitoring_module:
+                try:
+                    tc_util = monitoring_module.get_metric("tensorcore_util").data()
+                    monitoring_info["tensorcore_util"] = str(tc_util)
+                except Exception as e:
+                    self.logger.warning(f"Failed to fetch TensorCore utilization: {e}")
+                
+                try:
+                    hbm_usage = monitoring_module.get_metric("hbm_capacity_usage").data()
+                    hbm_total = monitoring_module.get_metric("hbm_capacity_total").data()
+                    monitoring_info["hbm_usage"] = str(hbm_usage)
+                    monitoring_info["hbm_total"] = str(hbm_total)
+                except Exception as e:
+                    self.logger.warning(f"Failed to fetch HBM usage: {e}")
+        except ImportError:
+            self.logger.warning("libtpu.sdk not available, skipping detailed SDK metrics.")
+        except Exception as e:
+            self.logger.warning(f"Failed to initialize libtpu sdk: {e}")
+
         # Find all available accel devices
         accel_devices = glob.glob("/dev/accel*")
         if not accel_devices:
@@ -39,13 +75,29 @@ class TpuDraPlugin(DraNodeServer):
         devices = []
         for dev_path in accel_devices:
             dev_name = dev_path.replace("/dev/accel", "")
+            
+            # Base attributes from instance metadata
+            attributes = {
+                "tpu.google.com/characteristics": characteristics,
+                "tpu.google.com/topology": topology,
+                "tpu.google.com/details": details,
+            }
+            
+            # SDK-specific attributes per chip
+            if dev_name in chip_sdk_info:
+                attributes["tpu.google.com/sdk-hostname"] = chip_sdk_info[dev_name]["hostname"]
+                attributes["tpu.google.com/sdk-coordinates"] = chip_sdk_info[dev_name]["coordinates"]
+            
+            # Global monitoring attributes
+            if "tensorcore_util" in monitoring_info:
+                attributes["tpu.google.com/tensorcore-util"] = monitoring_info["tensorcore_util"]
+            if "hbm_total" in monitoring_info:
+                attributes["tpu.google.com/hbm-total"] = monitoring_info["hbm_total"]
+                attributes["tpu.google.com/hbm-usage"] = monitoring_info["hbm_usage"]
+
             devices.append({
                 "name": dev_name,
-                "attributes": {
-                    "tpu.google.com/characteristics": characteristics,
-                    "tpu.google.com/topology": topology,
-                    "tpu.google.com/details": details,
-                }
+                "attributes": attributes
             })
         return devices
 
