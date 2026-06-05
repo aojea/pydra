@@ -1,7 +1,11 @@
 import abc
 import os
+import json
+import fcntl
 import asyncio
+import contextlib
 import logging
+import threading
 import grpc
 
 from pydra.core.generated.pluginregistration import pluginregistration_pb2 as reg_pb2
@@ -10,26 +14,37 @@ from pydra.core.generated.dra import dra_pb2 as dra_pb2
 from pydra.core.generated.dra import dra_pb2_grpc as dra_pb2_grpc
 
 class DraNodeServer(reg_pb2_grpc.RegistrationServicer, dra_pb2_grpc.DRAPluginServicer, abc.ABC):
-    def __init__(self, plugin_name: str, socket_path: str, kubelet_socket_path: str = None, registration_socket_path: str = None):
+    def __init__(self, plugin_name: str, socket_path: str, kubelet_socket_path: str = None, registration_socket_path: str = None, enable_device_metadata: bool = False, cdi_directory: str = "/var/run/cdi"):
         self.plugin_name = plugin_name
-        # socket_path is where the server binds locally.
         self.socket_path = socket_path
-        # kubelet_socket_path is the socket path from the perspective of kubelet.
         self.kubelet_socket_path = kubelet_socket_path or socket_path
         self.registration_socket_path = registration_socket_path
+        self.enable_device_metadata = enable_device_metadata
+        self.cdi_directory = cdi_directory
         self.logger = logging.getLogger(self.__class__.__name__)
         self.k8s_api = None
+        self._watcher_task = None
+        self._stop_event = threading.Event()
+
+    @contextlib.asynccontextmanager
+    async def _lock(self):
+        plugin_dir = os.path.dirname(self.socket_path)
+        os.makedirs(plugin_dir, exist_ok=True)
+        lock_path = os.path.join(plugin_dir, "serialize.lock")
+        f = await asyncio.to_thread(open, lock_path, "w")
+        try:
+            await asyncio.to_thread(fcntl.flock, f.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            await asyncio.to_thread(fcntl.flock, f.fileno(), fcntl.LOCK_UN)
+            f.close()
 
     async def GetInfo(self, request, context):
         self.logger.info("GetInfo called")
         try:
-            # The endpoint field must be the socket path relative or absolute from Kubelet perspective.
-            # Usually it is the absolute path inside the kubelet plugin dir, e.g. /var/lib/kubelet/plugins/tpu.google.com/plugin.sock
-            # We strip unix:// prefix if present.
             endpoint_path = self.kubelet_socket_path
             if endpoint_path.startswith("unix://"):
                 endpoint_path = endpoint_path[7:]
-
             self.logger.info(f"Returning PluginInfo with endpoint: {endpoint_path}")
             return reg_pb2.PluginInfo(
                 type="DRAPlugin",
@@ -50,58 +65,132 @@ class DraNodeServer(reg_pb2_grpc.RegistrationServicer, dra_pb2_grpc.DRAPluginSer
     async def NodePrepareResources(self, request, context):
         self.logger.info(f"NodePrepareResources called for {len(request.claims)} claims")
         prepared_claims = {}
-        for claim in request.claims:
-            self.logger.info(f"Preparing resource for claim UID: {claim.uid}, Namespace: {claim.namespace}, Name: {claim.name}")
-            try:
-                cdi_devices = await self.prepare_hardware(claim.uid, claim.namespace, claim.name)
-                # Build Device message for each allocated device
-                devices = []
-                for cdi_id in cdi_devices:
-                    # cdi_id is formatted as vendor/device_class=device_name, e.g., tpu.google.com/device=0
-                    # Let's parse device_name from cdi_id
-                    dev_name = "0"
-                    if "=" in cdi_id:
-                        dev_name = cdi_id.split("=")[-1]
-                    devices.append(dra_pb2.Device(
-                        pool_name=self.plugin_name,
-                        device_name=dev_name,
-                        cdi_device_ids=[cdi_id]
-                    ))
-                prepared_claims[claim.uid] = dra_pb2.NodePrepareResourceResponse(
-                    devices=devices,
-                    error=""
-                )
-            except Exception as e:
-                self.logger.exception(f"Failed to prepare resource for claim {claim.uid}")
-                prepared_claims[claim.uid] = dra_pb2.NodePrepareResourceResponse(
-                    error=str(e)
-                )
+        async with self._lock():
+            for claim in request.claims:
+                self.logger.info(f"Preparing resource for claim UID: {claim.uid}, Namespace: {claim.namespace}, Name: {claim.name}")
+                try:
+                    task = asyncio.create_task(self.prepare_hardware(claim.uid, claim.namespace, claim.name))
+                    def on_rpc_done():
+                        if not context.is_active():
+                            task.cancel()
+                    context.add_done_callback(on_rpc_done)
+
+                    cdi_devices = await task
+                    devices = []
+                    for dev_info in cdi_devices:
+                        if isinstance(dev_info, str):
+                            cdi_id = dev_info
+                            metadata = None
+                        else:
+                            cdi_id = dev_info.get("cdi_id")
+                            metadata = dev_info.get("metadata")
+
+                        dev_name = "0"
+                        if cdi_id and "=" in cdi_id:
+                            dev_name = cdi_id.split("=")[-1]
+
+                        if self.enable_device_metadata and metadata:
+                            plugin_dir = os.path.dirname(self.socket_path)
+                            meta_dir = os.path.join(plugin_dir, claim.uid, claim.name)
+                            os.makedirs(meta_dir, exist_ok=True)
+                            meta_file = os.path.join(meta_dir, "metadata.json")
+                            with open(meta_file, "w") as f:
+                                json.dump(metadata, f)
+                            
+                            os.makedirs(self.cdi_directory, exist_ok=True)
+                            cdi_spec_name = f"{self.plugin_name.replace('/', '_')}_metadata_{claim.uid}_{claim.name}.json"
+                            cdi_spec_path = os.path.join(self.cdi_directory, cdi_spec_name)
+                            
+                            cdi_vendor = self.plugin_name
+                            cdi_class = "metadata"
+                            cdi_device_name = f"{claim.uid}-{claim.name}"
+                            generated_cdi_id = f"{cdi_vendor}/{cdi_class}={cdi_device_name}"
+                            
+                            cdi_spec = {
+                                "cdiVersion": "0.5.0",
+                                "kind": cdi_vendor + "/" + cdi_class,
+                                "devices": [
+                                    {
+                                        "name": cdi_device_name,
+                                        "containerEdits": {
+                                            "mounts": [
+                                                {
+                                                    "hostPath": meta_file,
+                                                    "containerPath": f"/var/run/kubernetes.io/dra-device-attributes/{claim.name}/metadata.json",
+                                                    "options": ["ro"]
+                                                }
+                                            ]
+                                        }
+                                    }
+                                ]
+                            }
+                            with open(cdi_spec_path, "w") as f:
+                                json.dump(cdi_spec, f)
+                            
+                            cdi_id = generated_cdi_id
+
+                        devices.append(dra_pb2.Device(
+                            pool_name=self.plugin_name,
+                            device_name=dev_name,
+                            cdi_device_ids=[cdi_id] if cdi_id else []
+                        ))
+                    prepared_claims[claim.uid] = dra_pb2.NodePrepareResourceResponse(devices=devices, error="")
+                except asyncio.CancelledError:
+                    self.logger.warning(f"Preparation for claim {claim.uid} cancelled by Kubelet.")
+                    prepared_claims[claim.uid] = dra_pb2.NodePrepareResourceResponse(error="cancelled")
+                except Exception as e:
+                    self.logger.exception(f"Failed to prepare resource for claim {claim.uid}")
+                    prepared_claims[claim.uid] = dra_pb2.NodePrepareResourceResponse(error=str(e))
 
         return dra_pb2.NodePrepareResourcesResponse(claims=prepared_claims)
 
     async def NodeUnprepareResources(self, request, context):
         self.logger.info(f"NodeUnprepareResources called for {len(request.claims)} claims")
         unprepared_claims = {}
-        for claim in request.claims:
-            self.logger.info(f"Unpreparing resource for claim UID: {claim.uid}")
-            try:
-                await self.unprepare_hardware(claim.uid, claim.namespace, claim.name)
-                unprepared_claims[claim.uid] = dra_pb2.NodeUnprepareResourceResponse(
-                    error=""
-                )
-            except Exception as e:
-                self.logger.exception(f"Failed to unprepare resource for claim {claim.uid}")
-                unprepared_claims[claim.uid] = dra_pb2.NodeUnprepareResourceResponse(
-                    error=str(e)
-                )
+        async with self._lock():
+            for claim in request.claims:
+                self.logger.info(f"Unpreparing resource for claim UID: {claim.uid}")
+                try:
+                    task = asyncio.create_task(self.unprepare_hardware(claim.uid, claim.namespace, claim.name))
+                    def on_rpc_done():
+                        if not context.is_active():
+                            task.cancel()
+                    context.add_done_callback(on_rpc_done)
+
+                    await task
+
+                    if self.enable_device_metadata:
+                        plugin_dir = os.path.dirname(self.socket_path)
+                        meta_dir = os.path.join(plugin_dir, claim.uid, claim.name)
+                        meta_file = os.path.join(meta_dir, "metadata.json")
+                        if os.path.exists(meta_file):
+                            os.remove(meta_file)
+                        if os.path.exists(meta_dir):
+                            try:
+                                os.rmdir(meta_dir)
+                            except OSError:
+                                pass
+                        
+                        cdi_spec_name = f"{self.plugin_name.replace('/', '_')}_metadata_{claim.uid}_{claim.name}.json"
+                        cdi_spec_path = os.path.join(self.cdi_directory, cdi_spec_name)
+                        if os.path.exists(cdi_spec_path):
+                            os.remove(cdi_spec_path)
+
+                    unprepared_claims[claim.uid] = dra_pb2.NodeUnprepareResourceResponse(error="")
+                except asyncio.CancelledError:
+                    self.logger.warning(f"Unpreparation for claim {claim.uid} cancelled by Kubelet.")
+                    unprepared_claims[claim.uid] = dra_pb2.NodeUnprepareResourceResponse(error="cancelled")
+                except Exception as e:
+                    self.logger.exception(f"Failed to unprepare resource for claim {claim.uid}")
+                    unprepared_claims[claim.uid] = dra_pb2.NodeUnprepareResourceResponse(error=str(e))
         return dra_pb2.NodeUnprepareResourcesResponse(claims=unprepared_claims)
 
     @abc.abstractmethod
-    def get_devices(self) -> list[str]:
+    def get_devices(self) -> list:
         pass
 
     @abc.abstractmethod
-    async def prepare_hardware(self, claim_uid: str, namespace: str, name: str) -> list[str]:
+    async def prepare_hardware(self, claim_uid: str, namespace: str, name: str) -> list:
         pass
 
     @abc.abstractmethod
@@ -121,10 +210,7 @@ class DraNodeServer(reg_pb2_grpc.RegistrationServicer, dra_pb2_grpc.DRAPluginSer
                 return
         self.k8s_api = client.ResourceV1Api()
 
-    def publish_resource_slice(self):
-        self._init_kube_client()
-        if not self.k8s_api:
-            return
+    def _get_resource_slice_object(self):
         from kubernetes import client
         node_name = os.environ.get("NODE_NAME", "pydra-test-control-plane")
         device_ids = self.get_devices()
@@ -143,7 +229,7 @@ class DraNodeServer(reg_pb2_grpc.RegistrationServicer, dra_pb2_grpc.DRAPluginSer
                         device_attrs[k] = client.V1DeviceAttribute(int=v)
                     else:
                         device_attrs[k] = client.V1DeviceAttribute(string=str(v))
-                devices.append(client.V1Device(name=dev["name"], attributes=device_attrs))
+                devices.append(client.V1Device(name=dev.get("name", "0"), attributes=device_attrs))
 
         pool = client.V1ResourcePool(
             name=self.plugin_name,
@@ -157,27 +243,59 @@ class DraNodeServer(reg_pb2_grpc.RegistrationServicer, dra_pb2_grpc.DRAPluginSer
             devices=devices
         )
         slice_name = f"{node_name}-{self.plugin_name.replace('/', '-')}"
-        resource_slice = client.V1ResourceSlice(
+        return client.V1ResourceSlice(
             api_version="resource.k8s.io/v1",
             kind="ResourceSlice",
-            metadata=client.V1ObjectMeta(
-                name=slice_name
-            ),
+            metadata=client.V1ObjectMeta(name=slice_name),
             spec=spec
         )
 
-        try:
-            # Try to read first
-            existing = self.k8s_api.read_resource_slice(name=slice_name)
-            self.logger.info(f"ResourceSlice {slice_name} already exists. Replacing it.")
-            resource_slice.metadata.resource_version = existing.metadata.resource_version
-            self.k8s_api.replace_resource_slice(name=slice_name, body=resource_slice)
-        except client.exceptions.ApiException as e:
-            if e.status == 404:
-                self.logger.info(f"Creating ResourceSlice {slice_name}")
-                self.k8s_api.create_resource_slice(body=resource_slice)
-            else:
-                self.logger.error(f"Failed to publish ResourceSlice: {e}")
+    def _watch_resource_slice(self):
+        from kubernetes import client, watch
+        import time
+        self._init_kube_client()
+        if not self.k8s_api:
+            return
+        
+        node_name = os.environ.get("NODE_NAME", "pydra-test-control-plane")
+        slice_name = f"{node_name}-{self.plugin_name.replace('/', '-')}"
+        
+        w = watch.Watch()
+        self.logger.info(f"Starting ResourceSlice watcher for {slice_name}")
+        
+        def sync_slice():
+            if self._stop_event.is_set():
+                return
+            resource_slice = self._get_resource_slice_object()
+            try:
+                existing = self.k8s_api.read_resource_slice(name=slice_name)
+                resource_slice.metadata.resource_version = existing.metadata.resource_version
+                self.k8s_api.replace_resource_slice(name=slice_name, body=resource_slice)
+            except client.exceptions.ApiException as e:
+                if e.status == 404:
+                    self.logger.info(f"Creating ResourceSlice {slice_name}")
+                    self.k8s_api.create_resource_slice(body=resource_slice)
+                else:
+                    self.logger.error(f"Failed to publish ResourceSlice: {e}")
+
+        sync_slice()
+
+        while not self._stop_event.is_set():
+            try:
+                for event in w.stream(self.k8s_api.list_resource_slice, field_selector=f"metadata.name={slice_name}", timeout_seconds=10):
+                    if self._stop_event.is_set():
+                        w.stop()
+                        break
+                    if event['type'] == 'DELETED':
+                        self.logger.info(f"ResourceSlice {slice_name} was deleted, recreating...")
+                        sync_slice()
+                    elif event['type'] == 'MODIFIED':
+                        sync_slice()
+            except Exception as e:
+                if self._stop_event.is_set():
+                    break
+                self.logger.warning(f"Watcher disconnected, retrying: {e}")
+                time.sleep(2)
 
     def delete_resource_slice(self):
         if not self.k8s_api:
@@ -223,13 +341,15 @@ class DraNodeServer(reg_pb2_grpc.RegistrationServicer, dra_pb2_grpc.DRAPluginSer
         self.logger.info(f"Advertised Kubelet endpoint: {self.kubelet_socket_path}")
         await server.start()
 
-        # Publish ResourceSlice to API server
-        await asyncio.to_thread(self.publish_resource_slice)
+        self._watcher_task = asyncio.to_thread(self._watch_resource_slice)
+        loop = asyncio.get_running_loop()
+        watcher_future = loop.create_task(self._watcher_task)
 
         try:
             await server.wait_for_termination()
         finally:
-            # Delete ResourceSlice from API server on shutdown
+            self._stop_event.set()
+            watcher_future.cancel()
             await asyncio.to_thread(self.delete_resource_slice)
             await server.stop(0)
             for clean_path in clean_paths:
