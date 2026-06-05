@@ -1,10 +1,7 @@
 import asyncio
-import os
-import json
 import fcntl
-import threading
 import pytest
-from unittest.mock import MagicMock, patch, mock_open, AsyncMock
+from unittest.mock import MagicMock, patch, mock_open
 
 from pydra.core.server import DraNodeServer
 from pydra.core.generated.dra import dra_pb2 as dra_pb2
@@ -34,8 +31,8 @@ def server():
 
 def test_file_lock(server):
     async def run_test():
-        with patch("pydra.core.server.os.makedirs") as mock_makedirs, \
-             patch("pydra.core.server.open", mock_open()) as mock_file, \
+        with patch("pydra.core.server.os.makedirs"), \
+             patch("pydra.core.server.open", mock_open()), \
              patch("pydra.core.server.fcntl.flock") as mock_flock:
             
             async with server._lock():
@@ -117,9 +114,9 @@ def test_node_prepare_cancellation(server):
 def test_watch_reconciliation():
     server = DummyDriver("dummy.com/device", "/tmp/dummy.sock")
     
-    with patch("kubernetes.client.ResourceV1Api") as mock_api, \
+    with patch("kubernetes.client.ResourceV1Api"), \
          patch("kubernetes.watch.Watch") as mock_watch, \
-         patch("kubernetes.config.load_incluster_config") as mock_conf:
+         patch("kubernetes.config.load_incluster_config"):
         
         mock_watch_instance = mock_watch.return_value
         def fake_stream(*args, **kwargs):
