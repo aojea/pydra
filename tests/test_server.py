@@ -128,3 +128,59 @@ def test_watch_reconciliation():
         
         assert server.k8s_api is not None
         server.k8s_api.read_resource_slice.assert_called_once()
+
+def test_dynamic_discovery_fallback():
+    with patch("kubernetes.client.ApisApi") as mock_api, \
+         patch("kubernetes.config.load_incluster_config"):
+         
+        mock_api_instance = mock_api.return_value
+        group1 = MagicMock()
+        group1.name = "apps"
+        mock_api_instance.get_api_versions.return_value.groups = [group1]
+
+        server = DummyDriver("dummy.com/device", "/tmp/dummy.sock")
+        
+        assert server.enable_dra is False
+        assert server.enable_device_plugin is True
+
+def test_dynamic_discovery_dra_enabled():
+    with patch("kubernetes.client.ApisApi") as mock_api, \
+         patch("kubernetes.config.load_incluster_config"):
+         
+        mock_api_instance = mock_api.return_value
+        group1 = MagicMock()
+        group1.name = "resource.k8s.io"
+        mock_api_instance.get_api_versions.return_value.groups = [group1]
+
+        server = DummyDriver("dummy.com/device", "/tmp/dummy.sock")
+        
+        assert server.enable_dra is True
+        assert server.enable_device_plugin is False
+
+def test_dual_serving_mode():
+    server = DummyDriver("dummy.com/device", "/tmp/dummy.sock", enable_dra=True, enable_device_plugin=True)
+    assert server.enable_dra is True
+    assert server.enable_device_plugin is True
+
+    async def run_test():
+        with patch("grpc.aio.server") as mock_grpc_server, \
+             patch("pydra.core.generated.dra.dra_pb2_grpc.add_DRAPluginServicer_to_server"), \
+             patch("pydra.core.generated.deviceplugin.deviceplugin_pb2_grpc.add_DevicePluginServicer_to_server"), \
+             patch("pydra.core.generated.pluginregistration.pluginregistration_pb2_grpc.add_RegistrationServicer_to_server"):
+             
+            from unittest.mock import AsyncMock
+            mock_server_instance1 = AsyncMock()
+            mock_server_instance2 = AsyncMock()
+            mock_grpc_server.side_effect = [mock_server_instance1, mock_server_instance2]
+            
+            # Use a task to start serve and cancel it quickly
+            serve_task = asyncio.create_task(server.serve())
+            await asyncio.sleep(0.1)
+            server._stop_event.set()
+            await serve_task
+            
+            assert mock_grpc_server.call_count == 2
+            mock_server_instance1.start.assert_called_once()
+            mock_server_instance2.start.assert_called_once()
+
+    asyncio.run(run_test())

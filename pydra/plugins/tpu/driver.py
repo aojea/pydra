@@ -8,11 +8,11 @@ import glob
 from pydra.core.server import DraNodeServer
 
 class TpuDraPlugin(DraNodeServer):
-    def __init__(self, socket_path: str, kubelet_socket_path: str = None, registration_socket_path: str = None, cdi_dir: str = None):
+    def __init__(self, socket_path: str, kubelet_socket_path: str = None, registration_socket_path: str = None, cdi_dir: str = None, enable_dra: bool = None, enable_device_plugin: bool = None):
         plugin_name = "tpu.google.com"
-        super().__init__(plugin_name=plugin_name, socket_path=socket_path, kubelet_socket_path=kubelet_socket_path, registration_socket_path=registration_socket_path)
+        super().__init__(plugin_name=plugin_name, socket_path=socket_path, kubelet_socket_path=kubelet_socket_path, registration_socket_path=registration_socket_path, enable_dra=enable_dra, enable_device_plugin=enable_dp)
         self.cdi_dir = cdi_dir or "/var/run/cdi"
-        self.logger.info(f"Initialized TpuDraPlugin. cdi_dir: {self.cdi_dir}")
+        self.logger.info(f"Initialized TpuDraPlugin. cdi_dir: {self.cdi_dir}, enable_dra: {self.enable_dra}")
 
     def get_devices(self) -> list:
         # Provide better insights on the resourceslice with the tpu characteristics, network topology and details
@@ -193,6 +193,53 @@ class TpuDraPlugin(DraNodeServer):
         else:
             self.logger.warning(f"CDI JSON spec file {cdi_file_path} not found during unprepare")
 
+    async def allocate_legacy_devices(self, device_ids: list[str]) -> list[str]:
+        self.logger.info(f"allocate_legacy_devices: {device_ids}")
+        cdi_devices = []
+        for device_id in device_ids:
+            libtpu_path = "/usr/lib/libtpu.so"
+            try:
+                import libtpu
+                libtpu_path = libtpu.get_library_path()
+            except ImportError:
+                self.logger.warning("libtpu package not found, using default libtpu.so path")
+
+            cdi_spec = {
+                "cdiVersion": "1.1.0",
+                "kind": "tpu.google.com/device",
+                "devices": [
+                    {
+                        "name": str(device_id),
+                        "containerEdits": {
+                            "deviceNodes": [
+                                {
+                                    "path": f"/dev/accel{device_id}",
+                                    "hostPath": f"/dev/accel{device_id}",
+                                    "type": "c"
+                                }
+                            ],
+                            "mounts": [
+                                {
+                                    "hostPath": libtpu_path,
+                                    "containerPath": "/usr/lib/libtpu.so",
+                                    "options": ["ro", "nosuid", "nodev", "bind"]
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+
+            os.makedirs(self.cdi_dir, exist_ok=True)
+            cdi_file_path = os.path.join(self.cdi_dir, f"tpu.google.com_legacy_{device_id}.json")
+            self.logger.info(f"Writing CDI JSON spec to {cdi_file_path}")
+            with open(cdi_file_path, "w") as f:
+                json.dump(cdi_spec, f, indent=2)
+            
+            cdi_devices.append(f"tpu.google.com/device={device_id}")
+
+        return cdi_devices
+
 async def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
@@ -201,12 +248,18 @@ async def main():
     kubelet_socket_path = os.environ.get("KUBELET_SOCKET_PATH", socket_path)
     registration_socket_path = os.environ.get("REGISTRATION_SOCKET_PATH", None)
     cdi_dir = os.environ.get("CDI_DIR", "/var/run/cdi")
+    enable_dra_env = os.environ.get("ENABLE_DRA")
+    enable_dra = enable_dra_env.lower() == "true" if enable_dra_env is not None else None
+
+    enable_dp_env = os.environ.get("ENABLE_DEVICE_PLUGIN")
+    enable_dp = enable_dp_env.lower() == "true" if enable_dp_env is not None else None
 
     plugin = TpuDraPlugin(
         socket_path=socket_path,
         kubelet_socket_path=kubelet_socket_path,
         registration_socket_path=registration_socket_path,
-        cdi_dir=cdi_dir
+        cdi_dir=cdi_dir,
+        enable_dra=enable_dra
     )
     try:
         await plugin.serve()

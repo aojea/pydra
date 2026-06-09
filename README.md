@@ -49,3 +49,16 @@ Lean, independent packages that inherit from the core.
 
 * **Deep Telemetry:** Queries the physical hardware directly via native SDKs (`libtpu.sdk`, `pynvml`, etc.) to expose HBM memory capacity, link errors, and real-time topology layout back to the scheduler via `ResourceSlices`.
 * **Custom Slicing Logic:** Translates generic user scheduling requests into exact hardware configurations (e.g., configuring an NVIDIA MIG profile or partitioning a TPU v5e mesh topology).
+
+## Dynamic Fallback & Legacy Device Plugin Mode
+
+While `pydra` is designed for DRA, it gracefully integrates into legacy clusters that do not yet support DRA (e.g. earlier Kubernetes versions) by implementing the Kubernetes Device Plugin API (`v1beta1`).
+
+### Environment Variables
+
+*   **`ENABLE_DRA`**:
+    *   By default, `pydra` will automatically query the Kubernetes API Server for the `resource.k8s.io` API group. If it is present, `pydra` operates in DRA mode. If absent, it automatically assumes legacy mode.
+    *   You can strictly enforce DRA mode by setting `ENABLE_DRA=true`, or strict legacy mode by setting `ENABLE_DRA=false`.
+*   **`ENABLE_DEVICE_PLUGIN`**:
+    *   If you are running in a modern cluster (DRA enabled) but *still* require the legacy Device Plugin for other specific workloads, you can explicitly set `ENABLE_DEVICE_PLUGIN=true`.
+    *   In this dual-serving mode, `pydra` spins up **two concurrent gRPC servers**, projecting both `DRAPlugin` and `DevicePlugin` capabilities simultaneously to the Kubelet over separate Unix sockets.
