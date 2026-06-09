@@ -11,7 +11,7 @@ build-images:
 	@for driver in $(DRIVERS); do \
 		IMAGE="$(REGISTRY)/$$driver:$(TAG)"; \
 		echo "Building $$IMAGE..."; \
-		docker build -t $$IMAGE -f kubernetes/$$driver/Dockerfile . ; \
+		docker build --load -t $$IMAGE -f kubernetes/$$driver/Dockerfile . ; \
 	done
 
 PYTHON ?= .venv/bin/python3
