@@ -17,7 +17,7 @@ spec:
       - operator: Exists
       containers:
       - name: driver
-        image: pydra-driver:latest
+        image: pydra/tpu:test
         imagePullPolicy: Never
         command: ["python", "-m", "pydra.plugins.tpu.driver"]
         env:
@@ -31,6 +31,8 @@ spec:
           value: /var/lib/kubelet/plugins_registry/tpu.google.com-reg.sock
         - name: CDI_DIR
           value: /var/run/cdi
+        - name: ENABLE_DEVICE_PLUGIN
+          value: "true"
         securityContext:
           privileged: true
         volumeMounts:
@@ -38,25 +40,40 @@ spec:
           mountPath: /var/lib/kubelet/plugins
         - name: plugins-registry
           mountPath: /var/lib/kubelet/plugins_registry
+        - name: device-plugins
+          mountPath: /var/lib/kubelet/device-plugins
         - name: cdi
           mountPath: /var/run/cdi
+        - name: dev
+          mountPath: /dev
         - name: sys
           mountPath: /sys
           readOnly: true
+        - name: tpu-logs
+          mountPath: /tmp/tpu_logs
       volumes:
       - name: plugins
         hostPath:
           path: /var/lib/kubelet/plugins
-          type: DirectoryOrCreate
       - name: plugins-registry
         hostPath:
           path: /var/lib/kubelet/plugins_registry
-          type: DirectoryOrCreate
+      - name: device-plugins
+        hostPath:
+          path: /var/lib/kubelet/device-plugins
       - name: cdi
         hostPath:
           path: /var/run/cdi
           type: DirectoryOrCreate
+      - name: dev
+        hostPath:
+          path: /dev
+          type: Directory
       - name: sys
         hostPath:
           path: /sys
           type: Directory
+      - name: tpu-logs
+        hostPath:
+          path: /tmp/tpu_logs
+          type: DirectoryOrCreate

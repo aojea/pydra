@@ -7,11 +7,11 @@ import sys
 from pydra.core.server import DraNodeServer
 
 class NetworkDraPlugin(DraNodeServer):
-    def __init__(self, socket_path: str, kubelet_socket_path: str = None, registration_socket_path: str = None, cdi_dir: str = None):
+    def __init__(self, socket_path: str, kubelet_socket_path: str = None, registration_socket_path: str = None, cdi_dir: str = None, enable_dra: bool = None, enable_device_plugin: bool = None):
         plugin_name = "dra.net"
-        super().__init__(plugin_name=plugin_name, socket_path=socket_path, kubelet_socket_path=kubelet_socket_path, registration_socket_path=registration_socket_path)
+        super().__init__(plugin_name=plugin_name, socket_path=socket_path, kubelet_socket_path=kubelet_socket_path, registration_socket_path=registration_socket_path, enable_dra=enable_dra, enable_device_plugin=enable_device_plugin)
         self.cdi_dir = cdi_dir or "/var/run/cdi"
-        self.logger.info(f"Initialized NetworkDraPlugin. cdi_dir: {self.cdi_dir}")
+        self.logger.info(f"Initialized NetworkDraPlugin. cdi_dir: {self.cdi_dir}, enable_dra: {self.enable_dra}")
 
     def get_devices(self) -> list:
         import re
@@ -123,6 +123,38 @@ class NetworkDraPlugin(DraNodeServer):
         else:
             self.logger.warning(f"CDI JSON spec file {cdi_file_path} not found during unprepare")
 
+    async def allocate_legacy_devices(self, device_ids: list[str]) -> list[str]:
+        self.logger.info(f"allocate_legacy_devices: {device_ids}")
+        cdi_devices = []
+        for device_id in device_ids:
+            cdi_spec = {
+                "cdiVersion": "1.1.0",
+                "kind": "network.pydra.io/device",
+                "devices": [
+                    {
+                        "name": device_id,
+                        "containerEdits": {
+                            "netDevices": [
+                                {
+                                    "hostInterfaceName": device_id,
+                                    "name": device_id
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+
+            os.makedirs(self.cdi_dir, exist_ok=True)
+            cdi_file_path = os.path.join(self.cdi_dir, f"network.pydra.io_legacy_{device_id}.json")
+            self.logger.info(f"Writing CDI JSON spec to {cdi_file_path}")
+            with open(cdi_file_path, "w") as f:
+                json.dump(cdi_spec, f, indent=2)
+            
+            cdi_devices.append(f"network.pydra.io/device={device_id}")
+
+        return cdi_devices
+
 async def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
@@ -131,12 +163,19 @@ async def main():
     kubelet_socket_path = os.environ.get("KUBELET_SOCKET_PATH", socket_path)
     registration_socket_path = os.environ.get("REGISTRATION_SOCKET_PATH", None)
     cdi_dir = os.environ.get("CDI_DIR", "/var/run/cdi")
+    enable_dra_env = os.environ.get("ENABLE_DRA")
+    enable_dra = enable_dra_env.lower() == "true" if enable_dra_env is not None else None
+
+    enable_dp_env = os.environ.get("ENABLE_DEVICE_PLUGIN")
+    enable_dp = enable_dp_env.lower() == "true" if enable_dp_env is not None else None
 
     plugin = NetworkDraPlugin(
         socket_path=socket_path,
         kubelet_socket_path=kubelet_socket_path,
         registration_socket_path=registration_socket_path,
-        cdi_dir=cdi_dir
+        cdi_dir=cdi_dir,
+        enable_dra=enable_dra,
+        enable_device_plugin=enable_dp
     )
     try:
         await plugin.serve()

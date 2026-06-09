@@ -49,3 +49,44 @@ Lean, independent packages that inherit from the core.
 
 * **Deep Telemetry:** Queries the physical hardware directly via native SDKs (`libtpu.sdk`, `pynvml`, etc.) to expose HBM memory capacity, link errors, and real-time topology layout back to the scheduler via `ResourceSlices`.
 * **Custom Slicing Logic:** Translates generic user scheduling requests into exact hardware configurations (e.g., configuring an NVIDIA MIG profile or partitioning a TPU v5e mesh topology).
+
+## Dynamic Fallback & Legacy Device Plugin Mode
+
+While `pydra` is designed for DRA, it gracefully integrates into legacy clusters that do not yet support DRA (e.g. earlier Kubernetes versions) by implementing the Kubernetes Device Plugin API (`v1beta1`).
+
+### Environment Variables
+
+*   **`ENABLE_DRA`**:
+    *   By default, `pydra` will automatically query the Kubernetes API Server for the `resource.k8s.io` API group. If it is present, `pydra` operates in DRA mode. If absent, it automatically assumes legacy mode.
+    *   You can strictly enforce DRA mode by setting `ENABLE_DRA=true`, or strict legacy mode by setting `ENABLE_DRA=false`.
+*   **`ENABLE_DEVICE_PLUGIN`**:
+    *   If you are running in a modern cluster (DRA enabled) but *still* require the legacy Device Plugin for other specific workloads, you can explicitly set `ENABLE_DEVICE_PLUGIN=true`.
+    *   In this dual-serving mode, `pydra` spins up **two concurrent gRPC servers**, projecting both `DRAPlugin` and `DevicePlugin` capabilities simultaneously to the Kubelet over separate Unix sockets.
+
+## Installation
+
+Canonical deployment manifests for each supported hardware driver are provided in the `kubernetes/` directory.
+
+### Building the Image
+
+Each driver has a dedicated `Dockerfile` configured to install the specific Python dependencies it requires (e.g., `pynvml` for NVIDIA, `amdsmi` for AMD). Build the Docker image from the root of the repository:
+
+```bash
+# Example for NVIDIA
+docker build -t pydra-nvidia:latest -f kubernetes/nvidia/Dockerfile .
+
+# Example for TPU
+docker build -t pydra-tpu:latest -f kubernetes/tpu/Dockerfile .
+```
+
+### Deploying the Driver
+
+Once built (or pushed to your registry), deploy the driver's DaemonSet into the cluster using its corresponding `install.yaml` manifest. These manifests automatically configure the necessary `ServiceAccount` and `ClusterRole` mappings (for DRA API access) and mount the required host paths (e.g., `/var/lib/kubelet/plugins`, `/var/run/cdi`, `/dev`).
+
+```bash
+# Example for NVIDIA
+kubectl apply -f kubernetes/nvidia/install.yaml
+
+# Example for TPU
+kubectl apply -f kubernetes/tpu/install.yaml
+```

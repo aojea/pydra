@@ -12,9 +12,43 @@ from pydra.core.generated.pluginregistration import pluginregistration_pb2 as re
 from pydra.core.generated.pluginregistration import pluginregistration_pb2_grpc as reg_pb2_grpc
 from pydra.core.generated.dra import dra_pb2 as dra_pb2
 from pydra.core.generated.dra import dra_pb2_grpc as dra_pb2_grpc
+from pydra.core.generated.deviceplugin import deviceplugin_pb2 as deviceplugin_pb2
+from pydra.core.generated.deviceplugin import deviceplugin_pb2_grpc as deviceplugin_pb2_grpc
 
-class DraNodeServer(reg_pb2_grpc.RegistrationServicer, dra_pb2_grpc.DRAPluginServicer, abc.ABC):
-    def __init__(self, plugin_name: str, socket_path: str, kubelet_socket_path: str = None, registration_socket_path: str = None, enable_device_metadata: bool = False, cdi_directory: str = "/var/run/cdi"):
+class RegistrationWrapper(reg_pb2_grpc.RegistrationServicer):
+    def __init__(self, plugin_type, plugin_name, endpoint, supported_versions, logger):
+        self.plugin_type = plugin_type
+        self.plugin_name = plugin_name
+        self.endpoint = endpoint
+        self.supported_versions = supported_versions
+        self.logger = logger
+
+    async def GetInfo(self, request, context):
+        self.logger.info(f"GetInfo called for {self.plugin_type}")
+        try:
+            endpoint_path = self.endpoint
+            if endpoint_path.startswith("unix://"):
+                endpoint_path = endpoint_path[7:]
+            self.logger.info(f"Returning PluginInfo with endpoint: {endpoint_path}")
+            return reg_pb2.PluginInfo(
+                type=self.plugin_type,
+                name=self.plugin_name,
+                endpoint=endpoint_path,
+                supported_versions=self.supported_versions
+            )
+        except Exception as e:
+            self.logger.exception("Error in GetInfo")
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(str(e))
+            raise
+
+    async def NotifyRegistrationStatus(self, request, context):
+        self.logger.info(f"NotifyRegistrationStatus for {self.plugin_type}: registered={request.plugin_registered}, error={request.error}")
+        return reg_pb2.RegistrationStatusResponse()
+
+
+class DraNodeServer(dra_pb2_grpc.DRAPluginServicer, deviceplugin_pb2_grpc.DevicePluginServicer, abc.ABC):
+    def __init__(self, plugin_name: str, socket_path: str, kubelet_socket_path: str = None, registration_socket_path: str = None, enable_device_metadata: bool = False, cdi_directory: str = "/var/run/cdi", enable_dra: bool = None, enable_device_plugin: bool = None):
         self.plugin_name = plugin_name
         self.socket_path = socket_path
         self.kubelet_socket_path = kubelet_socket_path or socket_path
@@ -22,6 +56,19 @@ class DraNodeServer(reg_pb2_grpc.RegistrationServicer, dra_pb2_grpc.DRAPluginSer
         self.enable_device_metadata = enable_device_metadata
         self.cdi_directory = cdi_directory
         self.logger = logging.getLogger(self.__class__.__name__)
+        
+        if enable_dra is None:
+            self.enable_dra = self._discover_dra_enabled()
+            self.logger.info(f"Discovered DRA enabled: {self.enable_dra}")
+        else:
+            self.enable_dra = enable_dra
+
+        if enable_device_plugin is None:
+            self.enable_device_plugin = not self.enable_dra
+        else:
+            self.enable_device_plugin = enable_device_plugin
+        
+        self.logger.info(f"Configured with DRA={self.enable_dra}, DevicePlugin={self.enable_device_plugin}")
         self.k8s_api = None
         self._watcher_task = None
         self._stop_event = threading.Event()
@@ -39,28 +86,25 @@ class DraNodeServer(reg_pb2_grpc.RegistrationServicer, dra_pb2_grpc.DRAPluginSer
             await asyncio.to_thread(fcntl.flock, f.fileno(), fcntl.LOCK_UN)
             f.close()
 
-    async def GetInfo(self, request, context):
-        self.logger.info("GetInfo called")
+    def _discover_dra_enabled(self):
+        from kubernetes import client, config
         try:
-            endpoint_path = self.kubelet_socket_path
-            if endpoint_path.startswith("unix://"):
-                endpoint_path = endpoint_path[7:]
-            self.logger.info(f"Returning PluginInfo with endpoint: {endpoint_path}")
-            return reg_pb2.PluginInfo(
-                type="DRAPlugin",
-                name=self.plugin_name,
-                endpoint=endpoint_path,
-                supported_versions=["v1.DRAPlugin"]
-            )
+            config.load_incluster_config()
+        except Exception:
+            try:
+                config.load_kube_config()
+            except Exception:
+                self.logger.warning("Could not load k8s config, assuming DRA is disabled")
+                return False
+        api = client.ApisApi()
+        try:
+            groups = api.get_api_versions().groups
+            for group in groups:
+                if group.name == "resource.k8s.io":
+                    return True
         except Exception as e:
-            self.logger.exception("Error in GetInfo")
-            context.set_code(grpc.StatusCode.INTERNAL)
-            context.set_details(str(e))
-            raise
-
-    async def NotifyRegistrationStatus(self, request, context):
-        self.logger.info(f"NotifyRegistrationStatus: registered={request.plugin_registered}, error={request.error}")
-        return reg_pb2.RegistrationStatusResponse()
+            self.logger.warning(f"Failed to fetch k8s API groups: {e}")
+        return False
 
     async def NodePrepareResources(self, request, context):
         self.logger.info(f"NodePrepareResources called for {len(request.claims)} claims")
@@ -185,6 +229,40 @@ class DraNodeServer(reg_pb2_grpc.RegistrationServicer, dra_pb2_grpc.DRAPluginSer
                     unprepared_claims[claim.uid] = dra_pb2.NodeUnprepareResourceResponse(error=str(e))
         return dra_pb2.NodeUnprepareResourcesResponse(claims=unprepared_claims)
 
+    async def GetDevicePluginOptions(self, request, context):
+        return deviceplugin_pb2.DevicePluginOptions(pre_start_required=False)
+
+    async def ListAndWatch(self, request, context):
+        self.logger.info("ListAndWatch called")
+        devices = []
+        for dev in self.get_devices():
+            dev_name = dev if isinstance(dev, str) else dev.get("name")
+            devices.append(deviceplugin_pb2.Device(ID=dev_name, health="Healthy"))
+        
+        yield deviceplugin_pb2.ListAndWatchResponse(devices=devices)
+        
+        try:
+            while not self._stop_event.is_set():
+                await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            pass
+
+    async def Allocate(self, request, context):
+        self.logger.info("Allocate called for legacy device plugin")
+        responses = []
+        for container_req in request.container_requests:
+            cdi_devices = await self.allocate_legacy_devices(container_req.devices_ids)
+            responses.append(deviceplugin_pb2.ContainerAllocateResponse(
+                cdi_devices=[deviceplugin_pb2.CDIDevice(name=dev) for dev in cdi_devices]
+            ))
+        return deviceplugin_pb2.AllocateResponse(container_responses=responses)
+
+    async def GetPreferredAllocation(self, request, context):
+        return deviceplugin_pb2.PreferredAllocationResponse()
+
+    async def PreStartContainer(self, request, context):
+        return deviceplugin_pb2.PreStartContainerResponse()
+
     @abc.abstractmethod
     def get_devices(self) -> list:
         pass
@@ -196,6 +274,10 @@ class DraNodeServer(reg_pb2_grpc.RegistrationServicer, dra_pb2_grpc.DRAPluginSer
     @abc.abstractmethod
     async def unprepare_hardware(self, claim_uid: str, namespace: str, name: str):
         pass
+
+    async def allocate_legacy_devices(self, device_ids: list[str]) -> list[str]:
+        # To be implemented by subclasses if they support legacy device plugin
+        return []
 
     def _init_kube_client(self):
         from kubernetes import client, config
@@ -311,47 +393,89 @@ class DraNodeServer(reg_pb2_grpc.RegistrationServicer, dra_pb2_grpc.DRAPluginSer
                 self.logger.error(f"Failed to delete ResourceSlice: {e}")
 
     async def serve(self):
-        server = grpc.aio.server()
-        reg_pb2_grpc.add_RegistrationServicer_to_server(self, server)
-        dra_pb2_grpc.add_DRAPluginServicer_to_server(self, server)
-
-        addresses = [self.socket_path]
-        if self.registration_socket_path:
-            addresses.append(self.registration_socket_path)
-
+        self.servers = []
         clean_paths = []
-        for addr in addresses:
-            bind_address = addr
-            if bind_address.startswith("unix://"):
-                clean_path = bind_address[7:]
-            else:
-                clean_path = bind_address
-                bind_address = f"unix://{bind_address}"
 
-            clean_paths.append(clean_path)
-            os.makedirs(os.path.dirname(clean_path), exist_ok=True)
+        if self.enable_dra:
+            server_dra = grpc.aio.server()
+            dra_pb2_grpc.add_DRAPluginServicer_to_server(self, server_dra)
+            reg_dra = RegistrationWrapper("DRAPlugin", self.plugin_name, self.kubelet_socket_path, ["v1.DRAPlugin"], self.logger)
+            reg_pb2_grpc.add_RegistrationServicer_to_server(reg_dra, server_dra)
+            
+            addresses = [self.socket_path]
+            if self.registration_socket_path:
+                addresses.append(self.registration_socket_path)
+            
+            for addr in addresses:
+                bind_address = addr
+                if bind_address.startswith("unix://"):
+                    clean_path = bind_address[7:]
+                else:
+                    clean_path = bind_address
+                    bind_address = f"unix://{bind_address}"
 
-            if os.path.exists(clean_path):
-                self.logger.warning(f"Socket file {clean_path} already exists. Removing it.")
-                os.remove(clean_path)
+                clean_paths.append(clean_path)
+                os.makedirs(os.path.dirname(clean_path), exist_ok=True)
 
-            server.add_insecure_port(bind_address)
-            self.logger.info(f"Server bound to address: {bind_address}")
+                if os.path.exists(clean_path):
+                    self.logger.warning(f"Socket file {clean_path} already exists. Removing it.")
+                    os.remove(clean_path)
 
-        self.logger.info(f"Advertised Kubelet endpoint: {self.kubelet_socket_path}")
-        await server.start()
+                server_dra.add_insecure_port(bind_address)
+                self.logger.info(f"DRA Server bound to address: {bind_address}")
+            self.servers.append(server_dra)
 
-        self._watcher_task = asyncio.to_thread(self._watch_resource_slice)
-        loop = asyncio.get_running_loop()
-        watcher_future = loop.create_task(self._watcher_task)
+        if self.enable_device_plugin:
+            server_dp = grpc.aio.server()
+            deviceplugin_pb2_grpc.add_DevicePluginServicer_to_server(self, server_dp)
+            dp_socket_name = f"{self.plugin_name.replace('/', '-')}-legacy.sock"
+            dp_socket = f"/var/lib/kubelet/device-plugins/{dp_socket_name}" if "/var/lib/kubelet" in self.socket_path else os.path.join(os.path.dirname(self.socket_path), dp_socket_name)
+            dp_resource_name = f"{self.plugin_name}/device"
+            
+            reg_dp = RegistrationWrapper("DevicePlugin", dp_resource_name, dp_socket, ["v1beta1"], self.logger)
+            reg_pb2_grpc.add_RegistrationServicer_to_server(reg_dp, server_dp)
+
+            addresses_dp = [dp_socket]
+            if self.registration_socket_path:
+                addresses_dp.append(f"{self.registration_socket_path}-legacy")
+            
+            for addr in addresses_dp:
+                bind_address = addr
+                if bind_address.startswith("unix://"):
+                    clean_path = bind_address[7:]
+                else:
+                    clean_path = bind_address
+                    bind_address = f"unix://{bind_address}"
+
+                clean_paths.append(clean_path)
+                os.makedirs(os.path.dirname(clean_path), exist_ok=True)
+
+                if os.path.exists(clean_path):
+                    self.logger.warning(f"Socket file {clean_path} already exists. Removing it.")
+                    os.remove(clean_path)
+
+                server_dp.add_insecure_port(bind_address)
+                self.logger.info(f"DevicePlugin Server bound to address: {bind_address}")
+            self.servers.append(server_dp)
+
+        for s in self.servers:
+            await s.start()
+
+        watcher_future = None
+        if self.enable_dra:
+            self._watcher_task = asyncio.to_thread(self._watch_resource_slice)
+            loop = asyncio.get_running_loop()
+            watcher_future = loop.create_task(self._watcher_task)
 
         try:
-            await server.wait_for_termination()
+            await asyncio.gather(*(s.wait_for_termination() for s in self.servers))
         finally:
             self._stop_event.set()
-            watcher_future.cancel()
-            await asyncio.to_thread(self.delete_resource_slice)
-            await server.stop(0)
+            if watcher_future:
+                watcher_future.cancel()
+                await asyncio.to_thread(self.delete_resource_slice)
+            for s in self.servers:
+                await s.stop(0)
             for clean_path in clean_paths:
                 if os.path.exists(clean_path):
                     try:

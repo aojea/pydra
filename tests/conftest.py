@@ -14,14 +14,18 @@ def cleanup_host_dir():
 @pytest.fixture(scope="session", autouse=True)
 def global_cluster_setup():
     print("Building Docker image...")
-    subprocess.run(["docker", "build", "-t", "pydra-driver:latest", "."], check=True)
+    subprocess.run(["make", "build-images", "REGISTRY=pydra", "TAG=test"], check=True)
 
     print("Recreating Kind cluster...")
     subprocess.run(["kind", "delete", "cluster", "--name", CLUSTER_NAME], check=False)
     subprocess.run(["kind", "create", "cluster", "--name", CLUSTER_NAME, "--config", "tests/kind-dra.yaml"], check=True)
 
     print("Loading image into Kind...")
-    subprocess.run(["kind", "load", "docker-image", "pydra-driver:latest", "--name", CLUSTER_NAME], check=True)
+    subprocess.run(["kind", "load", "docker-image", "pydra/network:test", "--name", CLUSTER_NAME], check=True)
+    subprocess.run(["kind", "load", "docker-image", "pydra/tpu:test", "--name", CLUSTER_NAME], check=True)
+    print("Pulling and loading ubuntu:24.04 image into Kind to speed up tests...")
+    subprocess.run(["docker", "pull", "ubuntu:24.04"], check=True)
+    subprocess.run(["kind", "load", "docker-image", "ubuntu:24.04", "--name", CLUSTER_NAME], check=True)
 
     control_plane_container = f"{CLUSTER_NAME}-control-plane"
 

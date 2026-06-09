@@ -8,11 +8,11 @@ import glob
 from pydra.core.server import DraNodeServer
 
 class TpuDraPlugin(DraNodeServer):
-    def __init__(self, socket_path: str, kubelet_socket_path: str = None, registration_socket_path: str = None, cdi_dir: str = None):
+    def __init__(self, socket_path: str, kubelet_socket_path: str = None, registration_socket_path: str = None, cdi_dir: str = None, enable_dra: bool = None, enable_device_plugin: bool = None):
         plugin_name = "tpu.google.com"
-        super().__init__(plugin_name=plugin_name, socket_path=socket_path, kubelet_socket_path=kubelet_socket_path, registration_socket_path=registration_socket_path)
+        super().__init__(plugin_name=plugin_name, socket_path=socket_path, kubelet_socket_path=kubelet_socket_path, registration_socket_path=registration_socket_path, enable_dra=enable_dra, enable_device_plugin=enable_device_plugin)
         self.cdi_dir = cdi_dir or "/var/run/cdi"
-        self.logger.info(f"Initialized TpuDraPlugin. cdi_dir: {self.cdi_dir}")
+        self.logger.info(f"Initialized TpuDraPlugin. cdi_dir: {self.cdi_dir}, enable_dra: {self.enable_dra}")
 
     def get_devices(self) -> list:
         # Provide better insights on the resourceslice with the tpu characteristics, network topology and details
@@ -101,6 +101,47 @@ class TpuDraPlugin(DraNodeServer):
             })
         return devices
 
+    def _get_tpu_envs(self):
+        envs = [
+            "TPU_SKIP_MDS_QUERY=true",
+            "TPU_RUNTIME_METRICS_PORTS=8431"
+        ]
+        try:
+            import urllib.request
+            import json
+            req = urllib.request.Request("http://metadata.google.internal/computeMetadata/v1/instance/attributes/?recursive=true", headers={"Metadata-Flavor": "Google"})
+            with urllib.request.urlopen(req, timeout=2) as response:
+                attrs = json.loads(response.read().decode())
+                
+                accel = attrs.get("cloud.google.com/gke-tpu-accelerator") or attrs.get("accelerator-type")
+                topology = attrs.get("cloud.google.com/gke-tpu-topology") or attrs.get("accelerator_topology_id") or attrs.get("physical_host_topology")
+                
+                if topology and topology != "unknown":
+                    envs.append(f"TPU_TOPOLOGY={topology}")
+                    
+                if accel and accel != "unknown":
+                    envs.append(f"TPU_ACCELERATOR_TYPE={accel}")
+        except Exception as e:
+            self.logger.warning(f"Could not fetch metadata for TPU envs: {e}")
+        return envs
+
+    def _setup_tpu_logs(self):
+        log_dir = "/tmp/tpu_logs"
+        os.makedirs(log_dir, exist_ok=True)
+        try:
+            for filename in os.listdir(log_dir):
+                file_path = os.path.join(log_dir, filename)
+                if os.path.isfile(file_path) or os.path.islink(file_path):
+                    os.unlink(file_path)
+                elif os.path.isdir(file_path):
+                    import shutil
+                    shutil.rmtree(file_path)
+            os.chmod(log_dir, 0o777)
+        except Exception as e:
+            self.logger.warning(f"Failed to clear/chmod {log_dir}: {e}")
+        return log_dir
+
+
     async def prepare_hardware(self, claim_uid: str, namespace: str, name: str) -> list[str]:
         self.logger.info(f"prepare_hardware: claim_uid={claim_uid}, namespace={namespace}, name={name}")
 
@@ -145,6 +186,9 @@ class TpuDraPlugin(DraNodeServer):
         except ImportError:
             self.logger.warning("libtpu package not found, using default libtpu.so path")
 
+        tpu_envs = self._get_tpu_envs()
+        tpu_log_dir = self._setup_tpu_logs()
+
         # Generate CDI v1.1.0 specification
         cdi_spec = {
             "cdiVersion": "1.1.0",
@@ -165,8 +209,14 @@ class TpuDraPlugin(DraNodeServer):
                                 "hostPath": libtpu_path,
                                 "containerPath": "/usr/lib/libtpu.so",
                                 "options": ["ro", "nosuid", "nodev", "bind"]
+                            },
+                            {
+                                "hostPath": tpu_log_dir,
+                                "containerPath": tpu_log_dir,
+                                "options": ["rw", "bind"]
                             }
-                        ]
+                        ],
+                        "env": tpu_envs
                     }
                 }
             ]
@@ -193,6 +243,63 @@ class TpuDraPlugin(DraNodeServer):
         else:
             self.logger.warning(f"CDI JSON spec file {cdi_file_path} not found during unprepare")
 
+    async def allocate_legacy_devices(self, device_ids: list[str]) -> list[str]:
+        self.logger.info(f"allocate_legacy_devices: {device_ids}")
+        cdi_devices = []
+        
+        tpu_envs = self._get_tpu_envs()
+        tpu_log_dir = self._setup_tpu_logs()
+        
+        for device_id in device_ids:
+            libtpu_path = "/usr/lib/libtpu.so"
+            try:
+                import libtpu
+                libtpu_path = libtpu.get_library_path()
+            except ImportError:
+                self.logger.warning("libtpu package not found, using default libtpu.so path")
+
+            cdi_spec = {
+                "cdiVersion": "1.1.0",
+                "kind": "tpu.google.com/device",
+                "devices": [
+                    {
+                        "name": str(device_id),
+                        "containerEdits": {
+                            "deviceNodes": [
+                                {
+                                    "path": f"/dev/accel{device_id}",
+                                    "hostPath": f"/dev/accel{device_id}",
+                                    "type": "c"
+                                }
+                            ],
+                            "mounts": [
+                                {
+                                    "hostPath": libtpu_path,
+                                    "containerPath": "/usr/lib/libtpu.so",
+                                    "options": ["ro", "nosuid", "nodev", "bind"]
+                                },
+                                {
+                                    "hostPath": tpu_log_dir,
+                                    "containerPath": tpu_log_dir,
+                                    "options": ["rw", "bind"]
+                                }
+                            ],
+                            "env": tpu_envs
+                        }
+                    }
+                ]
+            }
+
+            os.makedirs(self.cdi_dir, exist_ok=True)
+            cdi_file_path = os.path.join(self.cdi_dir, f"tpu.google.com_legacy_{device_id}.json")
+            self.logger.info(f"Writing CDI JSON spec to {cdi_file_path}")
+            with open(cdi_file_path, "w") as f:
+                json.dump(cdi_spec, f, indent=2)
+            
+            cdi_devices.append(f"tpu.google.com/device={device_id}")
+
+        return cdi_devices
+
 async def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
@@ -201,12 +308,19 @@ async def main():
     kubelet_socket_path = os.environ.get("KUBELET_SOCKET_PATH", socket_path)
     registration_socket_path = os.environ.get("REGISTRATION_SOCKET_PATH", None)
     cdi_dir = os.environ.get("CDI_DIR", "/var/run/cdi")
+    enable_dra_env = os.environ.get("ENABLE_DRA")
+    enable_dra = enable_dra_env.lower() == "true" if enable_dra_env is not None else None
+
+    enable_dp_env = os.environ.get("ENABLE_DEVICE_PLUGIN")
+    enable_dp = enable_dp_env.lower() == "true" if enable_dp_env is not None else None
 
     plugin = TpuDraPlugin(
         socket_path=socket_path,
         kubelet_socket_path=kubelet_socket_path,
         registration_socket_path=registration_socket_path,
-        cdi_dir=cdi_dir
+        cdi_dir=cdi_dir,
+        enable_dra=enable_dra,
+        enable_device_plugin=enable_dp
     )
     try:
         await plugin.serve()

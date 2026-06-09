@@ -17,7 +17,7 @@ spec:
       - operator: Exists
       containers:
       - name: driver
-        image: pydra-driver:latest
+        image: pydra/network:test
         imagePullPolicy: Never
         command: ["python", "-m", "pydra.plugins.network.driver"]
         env:

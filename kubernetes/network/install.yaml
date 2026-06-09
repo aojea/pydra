@@ -1,0 +1,84 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: network-dra-plugin
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: network-dra-plugin
+rules:
+- apiGroups: ["resource.k8s.io"]
+  resources: ["resourceslices"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["resource.k8s.io"]
+  resources: ["resourceclaims"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: network-dra-plugin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: network-dra-plugin
+subjects:
+- kind: ServiceAccount
+  name: network-dra-plugin
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: network-dra-plugin
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: network-dra-plugin
+  template:
+    metadata:
+      labels:
+        app: network-dra-plugin
+    spec:
+      serviceAccountName: network-dra-plugin
+      hostNetwork: true
+      priorityClassName: system-node-critical
+      containers:
+      - name: plugin
+        image: pydra-network:latest
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: plugins-registry
+          mountPath: /var/lib/kubelet/plugins_registry
+        - name: plugins
+          mountPath: /var/lib/kubelet/plugins
+          mountPropagation: Bidirectional
+        - name: cdi
+          mountPath: /var/run/cdi
+        - name: dev
+          mountPath: /dev
+        - name: sys
+          mountPath: /sys
+          readOnly: true
+      volumes:
+      - name: plugins-registry
+        hostPath:
+          path: /var/lib/kubelet/plugins_registry
+      - name: plugins
+        hostPath:
+          path: /var/lib/kubelet/plugins
+      - name: cdi
+        hostPath:
+          path: /var/run/cdi
+      - name: dev
+        hostPath:
+          path: /dev
+      - name: sys
+        hostPath:
+          path: /sys
