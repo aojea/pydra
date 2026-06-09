@@ -433,8 +433,9 @@ class DraNodeServer(dra_pb2_grpc.DRAPluginServicer, deviceplugin_pb2_grpc.Device
             dp_socket_name = f"{self.plugin_name.replace('/', '-')}-legacy.sock"
             dp_socket = f"/var/lib/kubelet/device-plugins/{dp_socket_name}" if "/var/lib/kubelet" in self.socket_path else os.path.join(os.path.dirname(self.socket_path), dp_socket_name)
             dp_kubelet_socket = dp_socket_name
+            dp_resource_name = f"{self.plugin_name}/device"
             
-            reg_dp = RegistrationWrapper("DevicePlugin", self.plugin_name, dp_kubelet_socket, ["v1beta1"], self.logger)
+            reg_dp = RegistrationWrapper("DevicePlugin", dp_resource_name, dp_kubelet_socket, ["v1beta1"], self.logger)
             reg_pb2_grpc.add_RegistrationServicer_to_server(reg_dp, server_dp)
 
             addresses_dp = [dp_socket]
