@@ -437,6 +437,8 @@ class DraNodeServer(dra_pb2_grpc.DRAPluginServicer, deviceplugin_pb2_grpc.Device
             reg_pb2_grpc.add_RegistrationServicer_to_server(reg_dp, server_dp)
 
             addresses_dp = [dp_socket]
+            if self.registration_socket_path:
+                addresses_dp.append(f"{self.registration_socket_path}-legacy")
             
             for addr in addresses_dp:
                 bind_address = addr
