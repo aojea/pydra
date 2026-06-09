@@ -101,6 +101,47 @@ class TpuDraPlugin(DraNodeServer):
             })
         return devices
 
+    def _get_tpu_envs(self):
+        envs = [
+            "TPU_SKIP_MDS_QUERY=true",
+            "TPU_RUNTIME_METRICS_PORTS=8431"
+        ]
+        try:
+            import urllib.request
+            import json
+            req = urllib.request.Request("http://metadata.google.internal/computeMetadata/v1/instance/attributes/?recursive=true", headers={"Metadata-Flavor": "Google"})
+            with urllib.request.urlopen(req, timeout=2) as response:
+                attrs = json.loads(response.read().decode())
+                
+                accel = attrs.get("cloud.google.com/gke-tpu-accelerator") or attrs.get("accelerator-type")
+                topology = attrs.get("cloud.google.com/gke-tpu-topology") or attrs.get("accelerator_topology_id") or attrs.get("physical_host_topology")
+                
+                if topology and topology != "unknown":
+                    envs.append(f"TPU_TOPOLOGY={topology}")
+                    
+                if accel and accel != "unknown":
+                    envs.append(f"TPU_ACCELERATOR_TYPE={accel}")
+        except Exception as e:
+            self.logger.warning(f"Could not fetch metadata for TPU envs: {e}")
+        return envs
+
+    def _setup_tpu_logs(self):
+        log_dir = "/tmp/tpu_logs"
+        os.makedirs(log_dir, exist_ok=True)
+        try:
+            for filename in os.listdir(log_dir):
+                file_path = os.path.join(log_dir, filename)
+                if os.path.isfile(file_path) or os.path.islink(file_path):
+                    os.unlink(file_path)
+                elif os.path.isdir(file_path):
+                    import shutil
+                    shutil.rmtree(file_path)
+            os.chmod(log_dir, 0o777)
+        except Exception as e:
+            self.logger.warning(f"Failed to clear/chmod {log_dir}: {e}")
+        return log_dir
+
+
     async def prepare_hardware(self, claim_uid: str, namespace: str, name: str) -> list[str]:
         self.logger.info(f"prepare_hardware: claim_uid={claim_uid}, namespace={namespace}, name={name}")
 
@@ -145,6 +186,9 @@ class TpuDraPlugin(DraNodeServer):
         except ImportError:
             self.logger.warning("libtpu package not found, using default libtpu.so path")
 
+        tpu_envs = self._get_tpu_envs()
+        tpu_log_dir = self._setup_tpu_logs()
+
         # Generate CDI v1.1.0 specification
         cdi_spec = {
             "cdiVersion": "1.1.0",
@@ -165,8 +209,14 @@ class TpuDraPlugin(DraNodeServer):
                                 "hostPath": libtpu_path,
                                 "containerPath": "/usr/lib/libtpu.so",
                                 "options": ["ro", "nosuid", "nodev", "bind"]
+                            },
+                            {
+                                "hostPath": tpu_log_dir,
+                                "containerPath": tpu_log_dir,
+                                "options": ["rw", "bind"]
                             }
-                        ]
+                        ],
+                        "env": tpu_envs
                     }
                 }
             ]
@@ -196,6 +246,10 @@ class TpuDraPlugin(DraNodeServer):
     async def allocate_legacy_devices(self, device_ids: list[str]) -> list[str]:
         self.logger.info(f"allocate_legacy_devices: {device_ids}")
         cdi_devices = []
+        
+        tpu_envs = self._get_tpu_envs()
+        tpu_log_dir = self._setup_tpu_logs()
+        
         for device_id in device_ids:
             libtpu_path = "/usr/lib/libtpu.so"
             try:
@@ -223,8 +277,14 @@ class TpuDraPlugin(DraNodeServer):
                                     "hostPath": libtpu_path,
                                     "containerPath": "/usr/lib/libtpu.so",
                                     "options": ["ro", "nosuid", "nodev", "bind"]
+                                },
+                                {
+                                    "hostPath": tpu_log_dir,
+                                    "containerPath": tpu_log_dir,
+                                    "options": ["rw", "bind"]
                                 }
-                            ]
+                            ],
+                            "env": tpu_envs
                         }
                     }
                 ]
