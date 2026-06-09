@@ -10,7 +10,7 @@ from pydra.core.server import DraNodeServer
 class AmdDraPlugin(DraNodeServer):
     def __init__(self, socket_path: str, kubelet_socket_path: str = None, registration_socket_path: str = None, cdi_dir: str = None, enable_dra: bool = None, enable_device_plugin: bool = None):
         plugin_name = "amd.com/gpu"
-        super().__init__(plugin_name=plugin_name, socket_path=socket_path, kubelet_socket_path=kubelet_socket_path, registration_socket_path=registration_socket_path, enable_dra=enable_dra, enable_device_plugin=enable_dp)
+        super().__init__(plugin_name=plugin_name, socket_path=socket_path, kubelet_socket_path=kubelet_socket_path, registration_socket_path=registration_socket_path, enable_dra=enable_dra, enable_device_plugin=enable_device_plugin)
         self.cdi_dir = cdi_dir or "/var/run/cdi"
         self.logger.info(f"Initialized AmdDraPlugin. cdi_dir: {self.cdi_dir}, enable_dra: {self.enable_dra}")
 
@@ -202,7 +202,8 @@ async def main():
         kubelet_socket_path=kubelet_socket_path,
         registration_socket_path=registration_socket_path,
         cdi_dir=cdi_dir,
-        enable_dra=enable_dra
+        enable_dra=enable_dra,
+        enable_device_plugin=enable_dp
     )
     try:
         await plugin.serve()
