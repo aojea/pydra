@@ -44,6 +44,8 @@ spec:
           mountPath: /var/lib/kubelet/device-plugins
         - name: cdi
           mountPath: /var/run/cdi
+        - name: dev
+          mountPath: /dev
         - name: sys
           mountPath: /sys
           readOnly: true
@@ -63,6 +65,10 @@ spec:
         hostPath:
           path: /var/run/cdi
           type: DirectoryOrCreate
+      - name: dev
+        hostPath:
+          path: /dev
+          type: Directory
       - name: sys
         hostPath:
           path: /sys

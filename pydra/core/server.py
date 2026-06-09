@@ -237,14 +237,12 @@ class DraNodeServer(dra_pb2_grpc.DRAPluginServicer, deviceplugin_pb2_grpc.Device
         devices = []
         for dev in self.get_devices():
             dev_name = dev if isinstance(dev, str) else dev.get("name")
-            devices.append(deviceplugin_pb2.Device(id=dev_name, health="Healthy"))
+            devices.append(deviceplugin_pb2.Device(ID=dev_name, health="Healthy"))
         
         yield deviceplugin_pb2.ListAndWatchResponse(devices=devices)
         
         try:
             while not self._stop_event.is_set():
-                if not context.is_active():
-                    break
                 await asyncio.sleep(5)
         except asyncio.CancelledError:
             pass
@@ -253,7 +251,7 @@ class DraNodeServer(dra_pb2_grpc.DRAPluginServicer, deviceplugin_pb2_grpc.Device
         self.logger.info("Allocate called for legacy device plugin")
         responses = []
         for container_req in request.container_requests:
-            cdi_devices = await self.allocate_legacy_devices(container_req.devicesIDs)
+            cdi_devices = await self.allocate_legacy_devices(container_req.devices_ids)
             responses.append(deviceplugin_pb2.ContainerAllocateResponse(
                 cdi_devices=[deviceplugin_pb2.CDIDevice(name=dev) for dev in cdi_devices]
             ))
@@ -435,7 +433,7 @@ class DraNodeServer(dra_pb2_grpc.DRAPluginServicer, deviceplugin_pb2_grpc.Device
             dp_kubelet_socket = dp_socket_name
             dp_resource_name = f"{self.plugin_name}/device"
             
-            reg_dp = RegistrationWrapper("DevicePlugin", dp_resource_name, dp_kubelet_socket, ["v1beta1"], self.logger)
+            reg_dp = RegistrationWrapper("DevicePlugin", dp_resource_name, dp_socket, ["v1beta1"], self.logger)
             reg_pb2_grpc.add_RegistrationServicer_to_server(reg_dp, server_dp)
 
             addresses_dp = [dp_socket]
