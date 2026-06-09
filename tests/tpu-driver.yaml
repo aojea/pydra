@@ -43,6 +43,8 @@ spec:
         - name: sys
           mountPath: /sys
           readOnly: true
+        - name: tpu-logs
+          mountPath: /tmp/tpu_logs
       volumes:
       - name: plugins
         hostPath:
@@ -60,3 +62,7 @@ spec:
         hostPath:
           path: /sys
           type: Directory
+      - name: tpu-logs
+        hostPath:
+          path: /tmp/tpu_logs
+          type: DirectoryOrCreate

@@ -76,3 +76,50 @@ def test_end_to_end_tpu_allocation(test_namespace):
     assert mounts[0]["containerPath"] == "/usr/lib/libtpu.so"
 
     print("SUCCESS: Integration test completed successfully!")
+
+def test_end_to_end_device_plugin_allocation(test_namespace):
+    # Load kubernetes client config
+    config.load_kube_config()
+    core_api = client.CoreV1Api()
+
+    # Apply the manifests in the test_namespace
+    subprocess.run(["kubectl", "apply", "-n", test_namespace, "-f", "tests/test-device-plugin.yaml"], check=True)
+
+    # Wait for the pod to become Ready / Running
+    print("Waiting for test-pod-device-plugin to reach Running state...")
+    for _ in range(60):
+        try:
+            pod = core_api.read_namespaced_pod("test-pod-device-plugin", test_namespace)
+            if pod.status.phase == "Running":
+                # Check if Ready condition is True
+                ready_condition = next((c for c in pod.status.conditions if c.type == "Ready"), None)
+                if ready_condition and ready_condition.status == "True":
+                    break
+        except Exception:
+            pass
+        time.sleep(2)
+    else:
+        # Collect diagnostics on failure
+        print("\n=== DIAGNOSTICS ===")
+        subprocess.run(["kubectl", "get", "pods,resourceclaims,deviceclasses,resourceslices", "-A"], check=False)
+        subprocess.run(["kubectl", "describe", "pod", "test-pod-device-plugin", "-n", test_namespace], check=False)
+        print("===================\n")
+        pytest.fail("test-pod-device-plugin did not reach Running/Ready status")
+
+    # Validate that the CDI JSON file was written for the legacy device plugin
+    cdi_ls = subprocess.run(["docker", "exec", f"{CLUSTER_NAME}-control-plane", "ls", "/var/run/cdi"], capture_output=True, text=True, check=True)
+    cdi_dir_contents = cdi_ls.stdout.splitlines()
+    cdi_files = [f for f in cdi_dir_contents if f.startswith("tpu.google.com_legacy_") and f.endswith(".json")]
+    assert len(cdi_files) >= 1, f"Expected legacy CDI file, found: {cdi_dir_contents}"
+
+    cdi_file_name = cdi_files[-1]
+
+    cdi_cat = subprocess.run(["docker", "exec", f"{CLUSTER_NAME}-control-plane", "cat", f"/var/run/cdi/{cdi_file_name}"], capture_output=True, text=True, check=True)
+    cdi_data = json.loads(cdi_cat.stdout)
+
+    # Validate CDI structure
+    assert cdi_data["cdiVersion"] == "1.1.0"
+    assert cdi_data["kind"] == "tpu.google.com/device"
+    assert len(cdi_data["devices"]) == 1
+    
+    print("SUCCESS: Device Plugin Integration test completed successfully!")
