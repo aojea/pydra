@@ -1,0 +1,90 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tpu-dra-plugin
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tpu-dra-plugin
+rules:
+- apiGroups: ["resource.k8s.io"]
+  resources: ["resourceslices"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["resource.k8s.io"]
+  resources: ["resourceclaims"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tpu-dra-plugin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tpu-dra-plugin
+subjects:
+- kind: ServiceAccount
+  name: tpu-dra-plugin
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: tpu-dra-plugin
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: tpu-dra-plugin
+  template:
+    metadata:
+      labels:
+        app: tpu-dra-plugin
+    spec:
+      serviceAccountName: tpu-dra-plugin
+      hostNetwork: true
+      priorityClassName: system-node-critical
+      containers:
+      - name: plugin
+        image: pydra-tpu:latest
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: plugins-registry
+          mountPath: /var/lib/kubelet/plugins_registry
+        - name: plugins
+          mountPath: /var/lib/kubelet/plugins
+          mountPropagation: Bidirectional
+        - name: cdi
+          mountPath: /var/run/cdi
+        - name: dev
+          mountPath: /dev
+        - name: sys
+          mountPath: /sys
+          readOnly: true
+        - name: tpu-logs
+          mountPath: /tmp/tpu_logs
+      volumes:
+      - name: plugins-registry
+        hostPath:
+          path: /var/lib/kubelet/plugins_registry
+      - name: plugins
+        hostPath:
+          path: /var/lib/kubelet/plugins
+      - name: cdi
+        hostPath:
+          path: /var/run/cdi
+      - name: dev
+        hostPath:
+          path: /dev
+      - name: sys
+        hostPath:
+          path: /sys
+      - name: tpu-logs
+        hostPath:
+          path: /tmp/tpu_logs
+          type: DirectoryOrCreate

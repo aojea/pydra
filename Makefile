@@ -1,6 +1,18 @@
-.PHONY: all protos clean
+.PHONY: all protos clean build-images
 
 all: protos
+
+REGISTRY ?= ghcr.io/aojea/pydra
+TAG ?= $(shell git describe --tags --always --dirty)
+
+DRIVERS = amd network nvidia tpu
+
+build-images:
+	@for driver in $(DRIVERS); do \
+		IMAGE="$(REGISTRY)/$$driver:$(TAG)"; \
+		echo "Building $$IMAGE..."; \
+		docker build -t $$IMAGE -f kubernetes/$$driver/Dockerfile . ; \
+	done
 
 PYTHON ?= .venv/bin/python3
 
