@@ -31,6 +31,8 @@ spec:
           value: /var/lib/kubelet/plugins_registry/tpu.google.com-reg.sock
         - name: CDI_DIR
           value: /var/run/cdi
+        - name: ENABLE_DEVICE_PLUGIN
+          value: "true"
         securityContext:
           privileged: true
         volumeMounts:
