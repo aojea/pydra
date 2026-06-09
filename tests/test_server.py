@@ -168,9 +168,11 @@ def test_dual_serving_mode():
              patch("pydra.core.generated.deviceplugin.deviceplugin_pb2_grpc.add_DevicePluginServicer_to_server"), \
              patch("pydra.core.generated.pluginregistration.pluginregistration_pb2_grpc.add_RegistrationServicer_to_server"):
              
-            from unittest.mock import AsyncMock
+            from unittest.mock import AsyncMock, MagicMock
             mock_server_instance1 = AsyncMock()
+            mock_server_instance1.add_insecure_port = MagicMock()
             mock_server_instance2 = AsyncMock()
+            mock_server_instance2.add_insecure_port = MagicMock()
             mock_grpc_server.side_effect = [mock_server_instance1, mock_server_instance2]
             
             # Use a task to start serve and cancel it quickly
